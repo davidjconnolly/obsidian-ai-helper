@@ -1,0 +1,10 @@
+{
+	"id": "ai-helper",
+	"name": "AI Helper",
+	"version": "1.0.0",
+	"description": "Obsidian AI Tool",
+	"minAppVersion": "0.15.0",
+	"author": "David Connolly",
+	"authorUrl": "https://www.linkedin.com/in/djcon/",
+	"isDesktopOnly": false
+}

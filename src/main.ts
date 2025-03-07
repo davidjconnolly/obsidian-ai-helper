@@ -1,5 +1,11 @@
-import { Plugin, Notice, Modal, Setting, MarkdownView, Menu, Editor, App, PluginSettingTab } from 'obsidian';
-import { AIHelperSettings, loadSettings, saveSettings } from './settings';
+import { Plugin, Notice, Modal, MarkdownView, Menu, Editor, App } from 'obsidian';
+import { AIHelperSettings, AIHelperSettingTab, loadSettings, saveSettings } from './settings';
+
+enum ModalAction {
+  inline,
+  summarize,
+  copy
+}
 
 export default class AIHelperPlugin extends Plugin {
   settings: AIHelperSettings;
@@ -37,8 +43,22 @@ export default class AIHelperPlugin extends Plugin {
       return;
     }
 
-    const modal = new AIHelperModal(this.app, selectedText, this.settings, async (finalSummary: string) => {
-      editor.replaceSelection(`${selectedText}\n\n**Summary:**\n\n${finalSummary}`);
+    const modal = new AIHelperModal(this.app, selectedText, this.settings, async (finalSummary: string, action: ModalAction) => {
+      if (action === ModalAction.inline) {
+        editor.replaceSelection(`${selectedText}\n**Summary:**\n${finalSummary}`);
+      } else if (action === ModalAction.summarize) {
+        const currentContent = editor.getValue();
+        const summarySection = `----\n# Summary\n${finalSummary}\n----\n`;
+        editor.setValue(summarySection + currentContent);
+      } else if (action === ModalAction.copy) {
+        navigator.clipboard.writeText(finalSummary).then(() => {
+          new Notice('Summary copied to clipboard');
+        }).catch(err => {
+          console.error('Failed to copy text: ', err);
+        });
+      } else {
+        return;
+      }
     });
     modal.open();
   }
@@ -50,13 +70,13 @@ export default class AIHelperPlugin extends Plugin {
 
 class AIHelperModal extends Modal {
   text: string;
-  onSubmit: (summary: string) => void;
+  onSubmit: (summary: string, action: ModalAction) => void;
   settings: AIHelperSettings;
   summary: string;
   isStreaming: boolean;
   controller: AbortController;
 
-  constructor(app: App, text: string, settings: AIHelperSettings, onSubmit: (summary: string) => void) {
+  constructor(app: App, text: string, settings: AIHelperSettings, onSubmit: (summary: string, action: ModalAction) => void) {
     super(app);
     this.text = text;
     this.settings = settings;
@@ -74,25 +94,41 @@ class AIHelperModal extends Modal {
     const markdownPreview = contentEl.createEl('textarea', {
       cls: 'markdown-preview',
       attr: {
-        style: 'width: 100%; height: 50vh; overflow-y: auto; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap;',
+        style: 'width: 100%; height: 50vh; overflow-y: auto; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; resize: none;',
         disabled: 'true'
       },
       text: 'Waiting for input...'
     });
 
-    const buttonContainer = contentEl.createEl('div', { cls: 'button-container' });
-    const saveButton = buttonContainer.createEl('button', { text: 'Save Summary', cls: 'mod-cta', attr: { disabled: 'true' } });
-    saveButton.addEventListener('click', () => {
-      this.onSubmit(markdownPreview.value);
+    const buttonContainer = contentEl.createEl('div', {
+      cls: 'button-container',
+      attr: { style: 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;' }
+    });
+
+    const inlineButton = buttonContainer.createEl('button', { text: 'Insert Inline', cls: 'mod-cta', attr: { disabled: 'true' } });
+    inlineButton.addEventListener('click', () => {
+      this.onSubmit(markdownPreview.value, ModalAction.inline);
+      this.close();
+    });
+
+    const summarizeButton = buttonContainer.createEl('button', { text: 'Insert Summary', cls: 'mod-cta', attr: { disabled: 'true' } });
+    summarizeButton.addEventListener('click', () => {
+      this.onSubmit(markdownPreview.value, ModalAction.summarize);
+      this.close();
+    });
+
+    const copyButton = buttonContainer.createEl('button', { text: 'Copy', cls: 'mod-cta', attr: { disabled: 'true' } });
+    copyButton.addEventListener('click', () => {
+      this.onSubmit(markdownPreview.value, ModalAction.copy);
       this.close();
     });
 
     contentEl.appendChild(buttonContainer);
 
-    this.streamSummary(markdownPreview, saveButton);
+    this.streamSummary(markdownPreview, inlineButton, summarizeButton, copyButton);
   }
 
-  async streamSummary(markdownPreview: HTMLTextAreaElement, saveButton: HTMLButtonElement) {
+  async streamSummary(markdownPreview: HTMLTextAreaElement, inlineButton: HTMLButtonElement, summarizeButton: HTMLButtonElement, copyButton: HTMLButtonElement) {
     try {
       const apiUrl = this.settings.apiChoice === 'openai' ? 'https://api.openai.com/v1/chat/completions' : this.settings.localLLM.url;
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -151,7 +187,6 @@ class AIHelperModal extends Modal {
                 markdownPreview.value += json.choices[0].delta.content;
               }
             } catch (error) {
-              debugger;
               console.warn('Failed to parse streaming chunk:', line);
             }
           }
@@ -159,12 +194,17 @@ class AIHelperModal extends Modal {
       }
 
       markdownPreview.removeAttribute('disabled');
-      saveButton.removeAttribute('disabled');
+      inlineButton.removeAttribute('disabled');
+      summarizeButton.removeAttribute('disabled');
+      copyButton.removeAttribute('disabled');
     } catch (error) {
       console.error('Error summarizing text:', error);
       markdownPreview.value = 'Failed to summarize text:\n' + error;
+
       markdownPreview.setAttribute('disabled', 'true');
-      saveButton.setAttribute('disabled', 'true');
+      inlineButton.setAttribute('disabled', 'true');
+      summarizeButton.setAttribute('disabled', 'true');
+      copyButton.setAttribute('disabled', 'true');
     }
   }
 
@@ -172,89 +212,5 @@ class AIHelperModal extends Modal {
     this.controller.abort();
     const { contentEl } = this;
     contentEl.empty();
-  }
-}
-
-class AIHelperSettingTab extends PluginSettingTab {
-  plugin: AIHelperPlugin;
-
-  constructor(app: App, plugin: AIHelperPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    containerEl.createEl('h2', { text: 'AIHelper Plugin Settings' });
-
-    // API Selection Section
-    containerEl.createEl('h3', { text: 'API Selection' });
-
-    new Setting(containerEl)
-      .setName('API Choice')
-      .setDesc('Choose which API to use for summarization.')
-      .addDropdown(dropdown =>
-        dropdown.addOptions({ local: 'Local LLM', openai: 'OpenAI' })
-          .setValue(this.plugin.settings.apiChoice)
-          .onChange(async (value) => {
-            this.plugin.settings.apiChoice = value as 'local' | 'openai';
-            await this.plugin.saveSettings();
-          })
-      );
-
-
-    // OpenAI Settings Section
-    containerEl.createEl('h3', { text: 'OpenAI Settings' });
-    new Setting(containerEl)
-      .setName('OpenAI API Key')
-      .setDesc('Enter your OpenAI API key if using OpenAI.')
-      .addText(text =>
-        text.setPlaceholder('sk-...')
-          .setValue(this.plugin.settings.openAI.apiKey)
-          .onChange(async (value) => {
-            this.plugin.settings.openAI.apiKey = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName('OpenAI Model')
-      .setDesc('Enter the model\'s API identifier for OpenAI.')
-      .addText(text =>
-        text.setPlaceholder('gpt-3.5-turbo')
-          .setValue(this.plugin.settings.openAI.model)
-          .onChange(async (value) => {
-            this.plugin.settings.openAI.model = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    // Local LLM Settings Section
-    containerEl.createEl('h3', { text: 'Local LLM Settings' });
-    new Setting(containerEl)
-      .setName('Local LLM API URL')
-      .setDesc('Enter the API URL for your local LLM server.')
-      .addText(text =>
-        text.setPlaceholder('http://127.0.0.1:1234/v1/chat/completions')
-          .setValue(this.plugin.settings.localLLM.url)
-          .onChange(async (value) => {
-            this.plugin.settings.localLLM.url = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-      new Setting(containerEl)
-      .setName('Local LLM Model')
-      .setDesc('Enter the model\'s API identifier for your local LLM server.')
-      .addText(text =>
-        text.setPlaceholder('Identifier')
-          .setValue(this.plugin.settings.localLLM.model)
-          .onChange(async (value) => {
-            this.plugin.settings.localLLM.model = value;
-            await this.plugin.saveSettings();
-          })
-      );
   }
 }

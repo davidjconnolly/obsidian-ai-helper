@@ -45,13 +45,10 @@ export class AIHelperSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'AIHelper Plugin Settings' });
-
-    // API Selection Section
-    containerEl.createEl('h3', { text: 'API Selection' });
+    containerEl.createEl('h2', { text: 'AI Helper Plugin' });
 
     new Setting(containerEl)
-      .setName('API Choice')
+      .setName('Summary API')
       .setDesc('Choose which API to use for summarization.')
       .addDropdown(dropdown =>
         dropdown.addOptions({ local: 'Local LLM', openai: 'OpenAI' })
@@ -64,7 +61,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
 
 
     // OpenAI Settings Section
-    containerEl.createEl('h3', { text: 'OpenAI Settings' });
+    containerEl.createEl('h3', { text: 'OpenAI' });
     new Setting(containerEl)
       .setName('OpenAI API Key')
       .setDesc('Enter your OpenAI API key if using OpenAI.')
@@ -90,7 +87,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
       );
 
     // Local LLM Settings Section
-    containerEl.createEl('h3', { text: 'Local LLM Settings' });
+    containerEl.createEl('h3', { text: 'Local LLM' });
     new Setting(containerEl)
       .setName('Local LLM API URL')
       .setDesc('Enter the API URL for your local LLM server.')

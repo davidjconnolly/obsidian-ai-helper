@@ -23,4 +23,3 @@ This is a simple AI Helper to Summarize selected text.  It supports both LocalLL
   * Copy: Copy the summart to your clipboard
 
 ![modal](img/modal.png)
-

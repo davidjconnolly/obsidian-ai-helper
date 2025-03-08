@@ -1,12 +1,6 @@
-import { Plugin, Notice, MarkdownView, Menu, Editor, App } from 'obsidian';
+import { Plugin, Menu, Editor } from 'obsidian';
 import { AIHelperSettings, AIHelperSettingTab, loadSettings, saveSettings } from './settings';
 import { summarizeSelection } from './summarize';
-
-enum ModalAction {
-  inline,
-  summarize,
-  copy
-}
 
 export default class AIHelperPlugin extends Plugin {
   settings: AIHelperSettings;
@@ -30,11 +24,6 @@ export default class AIHelperPlugin extends Plugin {
 
   async saveSettings() {
     await saveSettings(this, this.settings);
-  }
-
-  getEditor() {
-    const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-    return view ? view.editor : null;
   }
 
   onunload() {

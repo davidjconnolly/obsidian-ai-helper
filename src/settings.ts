@@ -8,6 +8,7 @@ export interface AIHelperSettings {
     model: string;
   };
   openAI: {
+    url: string;
     apiKey: string;
     model: string;
   };
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: AIHelperSettings = {
     model: '',
   },
   openAI: {
+    url: 'https://api.openai.com/v1/chat/completions',
     apiKey: '',
     model: 'gpt-3.5-turbo',
   },
@@ -57,9 +59,19 @@ export class AIHelperSettingTab extends PluginSettingTab {
           })
       );
 
-
     // OpenAI Settings Section
     new Setting(containerEl).setName('OpenAI').setHeading();
+    new Setting(containerEl)
+      .setName('OpenAI API URL')
+      .setDesc('Enter the API URL for your OpenAI server.')
+      .addText(text =>
+        text.setPlaceholder('https://api.openai.com/v1/chat/completions')
+          .setValue(this.plugin.settings.openAI.url)
+          .onChange(async (value) => {
+            this.plugin.settings.openAI.url = value;
+            await this.plugin.saveSettings();
+          })
+      );
     new Setting(containerEl)
       .setName('OpenAI API Key')
       .setDesc('Enter your OpenAI API key if using OpenAI.')

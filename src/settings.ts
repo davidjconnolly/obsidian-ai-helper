@@ -5,7 +5,9 @@ export interface AIHelperSettings {
   apiChoice: 'local' | 'openai';
   localLLM: {
     url: string;
+    embeddingsUrl: string;
     model: string;
+    embeddingModel: string;
   };
   openAI: {
     url: string;
@@ -18,7 +20,9 @@ const DEFAULT_SETTINGS: AIHelperSettings = {
   apiChoice: 'local',
   localLLM: {
     url: 'http://127.0.0.1:1234/v1/chat/completions',
+    embeddingsUrl: 'http://127.0.0.1:1234/v1/embeddings',
     model: '',
+    embeddingModel: '',
   },
   openAI: {
     url: 'https://api.openai.com/v1/chat/completions',
@@ -48,8 +52,8 @@ export class AIHelperSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName('Summary API')
-      .setDesc('Choose which API to use for summarization.')
+      .setName('API')
+      .setDesc('Choose which API to use.')
       .addDropdown(dropdown =>
         dropdown.addOptions({ local: 'Local LLM', openai: 'OpenAI' })
           .setValue(this.plugin.settings.apiChoice)
@@ -108,14 +112,36 @@ export class AIHelperSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
-      new Setting(containerEl)
-      .setName('Local LLM Model')
-      .setDesc('Enter the model\'s API identifier for your local LLM server.')
+    new Setting(containerEl)
+      .setName('Local LLM Chat Model')
+      .setDesc('Enter the model identifier for chat completions.')
       .addText(text =>
-        text.setPlaceholder('Identifier')
+        text.setPlaceholder('Chat model identifier')
           .setValue(this.plugin.settings.localLLM.model)
           .onChange(async (value) => {
             this.plugin.settings.localLLM.model = value;
+            await this.plugin.saveSettings();
+          })
+      );
+    new Setting(containerEl)
+      .setName('Local LLM Embeddings API URL')
+      .setDesc('Enter the Embeddings API URL for your local LLM server.')
+      .addText(text =>
+        text.setPlaceholder('http://127.0.0.1:1234/v1/embeddings')
+          .setValue(this.plugin.settings.localLLM.embeddingsUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.localLLM.embeddingsUrl = value;
+            await this.plugin.saveSettings();
+          })
+      );
+    new Setting(containerEl)
+      .setName('Local LLM Embedding Model')
+      .setDesc('Enter the model identifier for embeddings.')
+      .addText(text =>
+        text.setPlaceholder('Embedding model identifier')
+          .setValue(this.plugin.settings.localLLM.embeddingModel)
+          .onChange(async (value) => {
+            this.plugin.settings.localLLM.embeddingModel = value;
             await this.plugin.saveSettings();
           })
       );

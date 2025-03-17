@@ -1,5 +1,5 @@
 import { App, TFile } from 'obsidian';
-import { create, insert, remove, search, save, load, Orama, SearchableType, AnySchema } from '@orama/orama';
+import { create, insert, remove, search, save, load, Orama, SearchableType, AnySchema, SearchParams } from '@orama/orama';
 import { MetadataExtractor, NoteMetadata } from '../metadata';
 import { LLMService } from './LLMService';
 import { SearchFilters } from './QueryParser';
@@ -97,156 +97,202 @@ export class VectorStore {
     // Get query embedding using search terms and context
     const searchText = [
       query,
-      filters?.tags?.join(' '),
-      filters?.type
+      filters?.tags?.join(' ')
     ].filter(Boolean).join(' ');
 
-    const queryEmbedding = await this.llmService.getEmbedding(searchText);
+    try {
+      // Generate embedding for search query
+      console.log('Generating embedding for:', searchText);
+      const queryEmbedding = await this.llmService.getEmbedding(searchText);
 
-    // Build search criteria
-    const searchCriteria: any = {
-      vector: queryEmbedding,
-      limit: 50
-    };
+      // Create filter function based on provided filters
+      const filterFn = this.createFilterFunction(filters);
 
-    // Add filters if provided
-    if (filters) {
-      // Create a single where clause combining all filters
-      const whereClauses: Record<string, any> = {};
+      // Basic search first to get candidates
+      // Create a search query with proper where conditions
+      const searchOptions = {
+        limit: 20
+      };
 
-      if (filters.tags?.length) {
-        whereClauses['metadata.tags'] = { contains: filters.tags };
+      // Only add where if we have filters
+      if (Object.keys(filterFn).length > 0) {
+        Object.assign(searchOptions, { where: filterFn });
       }
 
-      if (filters.dateRange) {
-        if (filters.dateRange.useCreatedDate) {
-          // Only add date range if we have both start and end dates
-          if (filters.dateRange.start && filters.dateRange.end) {
-            // Search by note creation date
-            const startTime = filters.dateRange.start.getTime();
-            const endTime = filters.dateRange.end.getTime();
-            console.log('Searching by creation date:', {
-              start: new Date(startTime).toISOString(),
-              end: new Date(endTime).toISOString()
-            });
+      console.log('Search options:', JSON.stringify(searchOptions, null, 2));
+      const searchResults = await search(this.vectorDB, searchOptions as any);
 
-            // Use a single where clause for the date range
-            whereClauses.createdAt = {
-              between: [startTime, endTime]
-            };
-          }
-        } else if (filters.dateRange.start) {
-          // Search by dates mentioned in the content
-          const searchDate = filters.dateRange.start.toISOString().split('T')[0];
-          console.log('Searching by content date:', searchDate);
-          whereClauses['metadata.dates'] = { contains: [searchDate] };
+      console.log(`Found ${searchResults.hits.length} initial candidates`);
+
+      // Extract documents from search results
+      const candidateDocuments = searchResults.hits.map(hit => {
+        const doc = hit.document as unknown as VectorDBDocument;
+        return {
+          ...doc,
+          metadata: {
+            ...doc.metadata,
+            frontmatter: doc.metadata.frontmatter ? JSON.parse(doc.metadata.frontmatter) : {}
+          },
+          content: doc.metadata.chunk.content
+        };
+      });
+
+      // Compute similarity scores
+      const results = this.rankDocumentsByVector(candidateDocuments, queryEmbedding, query);
+
+      // Only return results with scores above threshold
+      const threshold = 0.5;
+      const filteredResults = results.filter(result => result.score > threshold);
+
+      console.log(`Returning ${filteredResults.length} results after scoring`);
+      return filteredResults;
+    } catch (error) {
+      console.error('Error searching notes:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Creates a filter function based on the provided search filters
+   */
+  private createFilterFunction(filters?: SearchFilters): Record<string, any> {
+    if (!filters || Object.keys(filters).length === 0) {
+      return {};
+    }
+
+    // We need to use a different approach since 'and' is not supported
+    // Create a filter object that directly maps to properties
+    const filterObject: Record<string, any> = {};
+
+    // Add tag filter
+    if (filters.tags && filters.tags.length > 0) {
+      filterObject['metadata.tags'] = {
+        in: filters.tags
+      };
+    }
+
+    // Add type filter
+    if (filters.type) {
+      // Check if we have multiple types (pipe-separated)
+      if (filters.type.includes('|')) {
+        const types = filters.type.split('|');
+        // Use 'in' operator for multiple types
+        filterObject['metadata.type'] = {
+          in: types
+        };
+      } else {
+        // Single type - use equality
+        filterObject['metadata.type'] = {
+          eq: filters.type
+        };
+      }
+    }
+
+    // Add date range filter
+    if (filters.dateRange) {
+      const { start, end, useCreatedDate } = filters.dateRange;
+      const dateProperty = useCreatedDate ? 'createdAt' : 'lastModified';
+
+      filterObject[dateProperty] = {
+        // Use between operator instead of separate gte/lte
+        between: [start.getTime(), end.getTime()]
+      };
+    }
+
+    console.log('Created filter:', JSON.stringify(filterObject, null, 2));
+    return filterObject;
+  }
+
+  /**
+   * Ranks documents by vector similarity to the query
+   */
+  private rankDocumentsByVector(documents: any[], queryVector: number[], query: string): NoteSearchResult[] {
+    // Group documents by file path
+    const fileGroups = new Map<string, any[]>();
+
+    for (const doc of documents) {
+      const path = doc.metadata.path;
+      if (!fileGroups.has(path)) {
+        fileGroups.set(path, []);
+      }
+      fileGroups.get(path)!.push(doc);
+    }
+
+    // Calculate scores for each document
+    const scoredResults: NoteSearchResult[] = [];
+
+    for (const docs of fileGroups.values()) {
+      // Sort chunks by index for the same file
+      const sortedDocs = docs.sort((a, b) => a.metadata.chunk.index - b.metadata.chunk.index);
+
+      // Score each document using cosine similarity
+      const scoredDocs = sortedDocs.map(doc => {
+        // Calculate cosine similarity
+        const score = this.calculateCosineSimilarity(queryVector, doc.vector);
+
+        return {
+          id: doc.id,
+          content: doc.content,
+          metadata: doc.metadata,
+          score,
+          matches: this.contentContainsQuery(doc.content, query),
+          isHighestScoring: false // Will be updated later
+        };
+      });
+
+      // Find highest scoring document for this file
+      const highestScore = Math.max(...scoredDocs.map(d => d.score));
+
+      // Mark highest scoring chunk(s) for this file
+      scoredDocs.forEach(doc => {
+        if (doc.score === highestScore) {
+          doc.isHighestScoring = true;
         }
-      }
+      });
 
-      // Only add where clause if we have filters
-      if (Object.keys(whereClauses).length > 0) {
-        searchCriteria.where = whereClauses;
-      }
+      scoredResults.push(...scoredDocs);
     }
 
-    console.log('Search Criteria:', JSON.stringify(searchCriteria, (key, value) => {
-      if (key === 'vector') return '[vector data]';
-      return value;
-    }, 2));
+    // Sort all results by score (descending)
+    return scoredResults.sort((a, b) => b.score - a.score);
+  }
 
-    const results = await search(this.vectorDB, searchCriteria);
-    console.log('Raw Results:', JSON.stringify(results.hits.map(hit => ({
-      id: hit.document.id,
-      score: hit.score,
-      metadata: {
-        title: hit.document.metadata.title,
-        path: hit.document.metadata.path,
-        dates: hit.document.metadata.dates,
-        createdAt: new Date(hit.document.createdAt).toISOString(),
-        chunk: {
-          index: hit.document.metadata.chunk.index,
-          total: hit.document.metadata.chunk.total
-        }
-      }
-    })), null, 2));
-
-    if (results.hits.length === 0) {
-      return [];
+  /**
+   * Calculate the cosine similarity between two vectors
+   */
+  private calculateCosineSimilarity(vecA: number[], vecB: number[]): number {
+    if (vecA.length !== vecB.length) {
+      throw new Error(`Vector dimensions don't match: ${vecA.length} vs ${vecB.length}`);
     }
 
-    // Group results by file path to handle chunks
-    const fileGroups = new Map<string, {
-      highestScoringHit: typeof results.hits[0];
-      allHits: typeof results.hits[0][];
-    }>();
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
 
-    for (const hit of results.hits) {
-      const filePath = hit.document.metadata.path;
-      const group = fileGroups.get(filePath) || { highestScoringHit: hit, allHits: [] };
-
-      // Track highest scoring hit
-      if (hit.score > group.highestScoringHit.score) {
-        group.highestScoringHit = hit;
-      }
-
-      // Keep all hits - we'll filter by content matches later
-      group.allHits.push(hit);
-      fileGroups.set(filePath, group);
+    for (let i = 0; i < vecA.length; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      normA += vecA[i] * vecA[i];
+      normB += vecB[i] * vecB[i];
     }
 
-    // Get content and check for matches
-    const searchResults = await Promise.all(
-      Array.from(fileGroups.values()).map(async ({ highestScoringHit, allHits }) => {
-        const doc = highestScoringHit.document as unknown as VectorDBDocument;
-        const content = await this.getFileContent(doc.metadata.path);
+    normA = Math.sqrt(normA);
+    normB = Math.sqrt(normB);
 
-        // Use the query terms for exact matching
-        const searchTerms = query.toLowerCase().split(/\s+/);
-        const contentMatches = searchTerms.some(term =>
-          content.toLowerCase().includes(term) ||
-          doc.metadata.title.toLowerCase().includes(term)
-        );
+    if (normA === 0 || normB === 0) {
+      return 0;
+    }
 
-        // If we have a content match, boost the score
-        const scoreBoost = contentMatches ? 0.5 : 0;
+    return dotProduct / (normA * normB);
+  }
 
-        // Create results for all chunks, marking the highest scoring one
-        return allHits.map(hit => {
-          const hitDoc = hit.document as unknown as VectorDBDocument;
-          return {
-            id: hitDoc.id,
-            content: hitDoc.metadata.chunk.content,
-            metadata: {
-              ...hitDoc.metadata,
-              frontmatter: JSON.parse(hitDoc.metadata.frontmatter) as Record<string, unknown>
-            },
-            score: hit.score + scoreBoost,
-            matches: contentMatches,
-            isHighestScoring: hit === highestScoringHit
-          };
-        });
-      })
-    );
+  /**
+   * Check if content contains any part of the query
+   */
+  private contentContainsQuery(content: string, query: string): boolean {
+    const normalizedContent = content.toLowerCase();
+    const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 2);
 
-    // Flatten and sort results
-    const flatResults = searchResults.flat();
-
-    // Only filter out results if we have some good matches
-    const hasGoodMatches = flatResults.some(r => r.matches || r.score > 0.1);
-    const filteredResults = hasGoodMatches
-      ? flatResults.filter(r => r.matches || r.score > 0.1)
-      : flatResults;
-
-    return filteredResults.sort((a, b) => {
-      // First sort by matches
-      if (a.matches && !b.matches) return -1;
-      if (!a.matches && b.matches) return 1;
-      // Then by highest scoring status
-      if (a.isHighestScoring && !b.isHighestScoring) return -1;
-      if (!a.isHighestScoring && b.isHighestScoring) return 1;
-      // Finally by score
-      return b.score - a.score;
-    });
+    return queryTerms.some(term => normalizedContent.includes(term));
   }
 
   private async getFileContent(path: string): Promise<string> {

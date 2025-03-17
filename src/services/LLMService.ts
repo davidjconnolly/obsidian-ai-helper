@@ -35,7 +35,7 @@ export class LLMService {
         throw new Error('Invalid embedding response structure');
       }
 
-      if (!Array.isArray(embedding) || embedding.length !== 768) {
+      if (!Array.isArray(embedding) || embedding.length !== 1024) {
         throw new Error(`Invalid embedding dimension: ${embedding?.length}`);
       }
 
@@ -47,27 +47,13 @@ export class LLMService {
     }
   }
 
-  async streamCompletion(prompt: string): Promise<Response> {
-    const response = await fetch(this.settings.localLLM.url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: this.settings.localLLM.model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.2,
-        stream: true
-      }),
-      signal: this.controller.signal
-    });
-
-    if (!response.ok) {
-      throw new Error(`LLM API error (${response.status}): ${response.statusText}`);
-    }
-
-    return response;
-  }
-
-  async getCompletion(prompt: string): Promise<string> {
+  /**
+   * Send a completion request to the LLM API
+   * @param prompt The prompt to send to the LLM
+   * @param stream Whether to stream the response (true) or get a complete response (false)
+   * @returns Response object for streaming or the complete text response
+   */
+  async sendCompletion(prompt: string, stream: boolean = false): Promise<Response | string> {
     try {
       console.log('Sending request to LLM:', {
         url: this.settings.localLLM.url,
@@ -82,7 +68,7 @@ export class LLMService {
           model: this.settings.localLLM.model,
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.2,
-          stream: false
+          stream: stream
         }),
         signal: this.controller.signal
       });
@@ -97,36 +83,37 @@ export class LLMService {
         throw new Error(`LLM API error (${response.status}): ${response.statusText}\n${errorText}`);
       }
 
-      const jsonResponse = await response.json();
-      console.log('Raw LLM Response:', JSON.stringify(jsonResponse, null, 2));
-
-      // Handle different LLM response formats
-      let content = '';
-      if (jsonResponse.choices?.[0]?.message?.content) {
-        // OpenAI format
-        content = jsonResponse.choices[0].message.content;
-      } else if (jsonResponse.choices?.[0]?.text) {
-        // Some local models format
-        content = jsonResponse.choices[0].text;
-      } else if (jsonResponse.response) {
-        // Another common format
-        content = jsonResponse.response;
-      } else {
-        console.error('Unrecognized LLM response structure:', jsonResponse);
-        throw new Error('Unrecognized LLM response structure');
+      // For streaming, return the response directly
+      if (stream) {
+        return response;
       }
 
-      console.log('Extracted content:', content);
-      return content.trim();
+      // For non-streaming, parse and return the text content
+      const jsonResponse = await response.json();
+      if (jsonResponse.choices && jsonResponse.choices.length > 0) {
+        return jsonResponse.choices[0].message?.content || '';
+      } else {
+        throw new Error('Invalid completion response structure');
+      }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error during LLM completion';
-      console.error('LLM completion error:', errorMessage);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error during completion';
+      console.error('Completion error:', errorMessage);
       throw error;
     }
   }
 
+  // Helper methods for backward compatibility
+  async streamCompletion(prompt: string): Promise<Response> {
+    return this.sendCompletion(prompt, true) as Promise<Response>;
+  }
+
+  async getCompletion(prompt: string): Promise<string> {
+    return this.sendCompletion(prompt, false) as Promise<string>;
+  }
+
   abort() {
     this.controller.abort();
+    // Create a new controller for future requests
     this.controller = new AbortController();
   }
 }

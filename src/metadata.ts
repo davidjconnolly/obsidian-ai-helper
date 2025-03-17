@@ -4,39 +4,47 @@ export interface NoteMetadata {
   title: string;
   path: string;
   tags: string[];
-  people: string[];
   dates: string[];
   type: string;
-  frontmatter: string;
+  frontmatter: Record<string, unknown>;
   links: string[];
-  tasks: {
-    total: number;
-    completed: number;
-    open: number;
-  };
-  lastModified: number;
 }
 
 export class MetadataExtractor {
   private static readonly TAG_REGEX = /#[\w-]+/g;
   private static readonly LINK_REGEX = /\[\[([^\]]+)\]\]/g;
-  private static readonly PERSON_REGEX = /\[\[([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\]\]/g;
   private static readonly DATE_REGEX = /\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}/g;
   private static readonly TASK_REGEX = /- \[([ x])\] /g;
 
-  static extractFrontmatter(content: string): Record<string, any> {
+  static extractFrontmatter(content: string): Record<string, unknown> {
     const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
     const match = content.match(frontmatterRegex);
     if (!match) return {};
 
     const frontmatter = match[1];
     const lines = frontmatter.split('\n');
-    const result: Record<string, any> = {};
+    const result: Record<string, unknown> = {};
 
     for (const line of lines) {
       const [key, ...values] = line.split(':').map(s => s.trim());
       if (key && values.length > 0) {
-        result[key] = values.join(':').trim();
+        const value = values.join(':').trim();
+        // Try to parse arrays and objects
+        if (value.startsWith('[') && value.endsWith(']')) {
+          try {
+            result[key] = JSON.parse(value);
+          } catch {
+            result[key] = value.slice(1, -1).split(',').map(s => s.trim());
+          }
+        } else if (value.toLowerCase() === 'true') {
+          result[key] = true;
+        } else if (value.toLowerCase() === 'false') {
+          result[key] = false;
+        } else if (!isNaN(Number(value))) {
+          result[key] = Number(value);
+        } else {
+          result[key] = value;
+        }
       }
     }
 
@@ -45,21 +53,17 @@ export class MetadataExtractor {
 
   static extractTags(content: string): string[] {
     const matches = content.match(this.TAG_REGEX) || [];
-    return matches.map(tag => tag.slice(1));
+    return [...new Set(matches.map(tag => tag.slice(1)))];
   }
 
   static extractLinks(content: string): string[] {
     const matches = content.match(this.LINK_REGEX) || [];
-    return matches.map(link => link.slice(2, -2));
-  }
-
-  static extractPeople(content: string): string[] {
-    const matches = content.match(this.PERSON_REGEX) || [];
-    return matches.map(person => person.slice(2, -2));
+    return [...new Set(matches.map(link => link.slice(2, -2)))];
   }
 
   static extractDates(content: string): string[] {
-    return content.match(this.DATE_REGEX) || [];
+    const matches = content.match(this.DATE_REGEX) || [];
+    return [...new Set(matches)];
   }
 
   static extractTasks(content: string): { total: number; completed: number; open: number } {
@@ -80,54 +84,57 @@ export class MetadataExtractor {
     return { total, completed, open };
   }
 
-  static determineNoteType(content: string, frontmatter: Record<string, any>): string {
-    // Check frontmatter first
-    if (frontmatter.type) return frontmatter.type;
+  static determineNoteType(content: string, frontmatter: Record<string, unknown>): string {
+    // First check frontmatter for explicit type
+    if (typeof frontmatter.type === 'string') {
+      return frontmatter.type;
+    }
 
-    // Check content patterns
-    if (content.match(/^# Meeting Notes/)) return 'meeting';
-    if (content.match(/^# Project/)) return 'project';
-    if (content.match(/^# Daily Note/)) return 'daily';
-    if (content.match(/^# Book Notes/)) return 'book';
-    if (content.match(/^# Research/)) return 'research';
+    // Then check content patterns
+    if (content.includes('- [ ]') || content.includes('- [x]')) {
+      return 'task';
+    }
+    if (content.match(/\d{4}-\d{2}-\d{2}/)) {
+      return 'journal';
+    }
+    if (content.match(/\[\[([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\]\]/)) {
+      return 'person';
+    }
+    if (content.match(/#[\w-]+/)) {
+      return 'note';
+    }
 
-    return 'general';
+    return 'unknown';
   }
 
   static async extractMetadata(file: TFile, content: string): Promise<NoteMetadata> {
     const frontmatter = this.extractFrontmatter(content);
     const tags = this.extractTags(content);
     const links = this.extractLinks(content);
-    const people = this.extractPeople(content);
     const dates = this.extractDates(content);
-    const tasks = this.extractTasks(content);
     const type = this.determineNoteType(content, frontmatter);
 
     return {
       title: file.basename,
       path: file.path,
       tags,
-      people,
       dates,
       type,
-      frontmatter: JSON.stringify(frontmatter),
-      links,
-      tasks,
-      lastModified: file.stat.mtime
+      frontmatter,
+      links
     };
   }
 
   static createMetadataEmbedding(metadata: NoteMetadata): string {
-    // Create a structured text representation of the metadata
-    // This will be used to generate embeddings
-    return `
-Title: ${metadata.title}
-Type: ${metadata.type}
-Tags: ${metadata.tags.join(', ')}
-People: ${metadata.people.join(', ')}
-Dates: ${metadata.dates.join(', ')}
-Tasks: ${metadata.tasks.completed}/${metadata.tasks.total} completed
-Frontmatter: ${JSON.stringify(metadata.frontmatter)}
-    `.trim();
+    const parts = [
+      `Title: ${metadata.title}`,
+      `Type: ${metadata.type}`,
+      metadata.tags.length ? `Tags: ${metadata.tags.join(', ')}` : null,
+      metadata.dates.length ? `Dates: ${metadata.dates.join(', ')}` : null,
+      metadata.links.length ? `Links: ${metadata.links.join(', ')}` : null,
+      Object.keys(metadata.frontmatter).length ? `Additional metadata: ${JSON.stringify(metadata.frontmatter)}` : null
+    ];
+
+    return parts.filter(Boolean).join('\n');
   }
 }

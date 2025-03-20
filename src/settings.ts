@@ -73,7 +73,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           })
       );
     new Setting(containerEl)
-      .setName('OpenAI API Key')
+      .setName('OpenAI API key')
       .setDesc('Enter your OpenAI API key if using OpenAI.')
       .addText(text =>
         text.setPlaceholder('sk-...')
@@ -84,7 +84,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           })
       );
     new Setting(containerEl)
-      .setName('OpenAI Model')
+      .setName('OpenAI model')
       .setDesc('Enter the model\'s API identifier for OpenAI.')
       .addText(text =>
         text.setPlaceholder('gpt-3.5-turbo')
@@ -109,7 +109,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           })
       );
       new Setting(containerEl)
-      .setName('Local LLM Model')
+      .setName('Local LLM model')
       .setDesc('Enter the model\'s API identifier for your local LLM server.')
       .addText(text =>
         text.setPlaceholder('Identifier')

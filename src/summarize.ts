@@ -54,7 +54,7 @@ class AIHelperModal extends Modal {
   }
 
   async onOpen() {
-    this.titleEl.setText('Summarize Text');
+    this.titleEl.setText('Summarize text');
     const { contentEl } = this;
     contentEl.empty();
 
@@ -72,13 +72,13 @@ class AIHelperModal extends Modal {
       attr: { style: 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;' }
     });
 
-    const inlineButton = buttonContainer.createEl('button', { text: 'Insert Inline', cls: 'mod-cta', attr: { disabled: 'true' } });
+    const inlineButton = buttonContainer.createEl('button', { text: 'Insert inline', cls: 'mod-cta', attr: { disabled: 'true' } });
     inlineButton.addEventListener('click', () => {
       this.onSubmit(markdownPreview.value, ModalAction.inline);
       this.close();
     });
 
-    const summarizeButton = buttonContainer.createEl('button', { text: 'Insert Summary', cls: 'mod-cta', attr: { disabled: 'true' } });
+    const summarizeButton = buttonContainer.createEl('button', { text: 'Insert summary', cls: 'mod-cta', attr: { disabled: 'true' } });
     summarizeButton.addEventListener('click', () => {
       this.onSubmit(markdownPreview.value, ModalAction.summarize);
       this.close();

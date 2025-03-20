@@ -1,4 +1,4 @@
-# Obsidian AI Helper
+# AI Helper
 
 This is a simple AI Helper to Summarize selected text.  It supports both LocalLLM's and the OpenAI API.
 

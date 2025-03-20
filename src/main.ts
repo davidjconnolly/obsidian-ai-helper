@@ -1,4 +1,4 @@
-import { Plugin, Menu, Editor } from 'obsidian';
+import { Plugin, Menu, Editor, MarkdownView } from 'obsidian';
 import { AIHelperSettings, AIHelperSettingTab, loadSettings, saveSettings } from './settings';
 import { summarizeSelection } from './summarize';
 
@@ -12,7 +12,7 @@ export default class AIHelperPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu: Menu, editor: Editor) => {
         menu.addItem((item) => {
-          item.setTitle('Summarize Selected Text')
+          item.setTitle('Summarize selected text')
             .setIcon('pencil')
             .onClick(() => {
               summarizeSelection(editor, this.app, this.settings);
@@ -20,6 +20,17 @@ export default class AIHelperPlugin extends Plugin {
         });
       })
     );
+
+    this.addCommand({
+      id: 'open-chatbot-modal',
+      name: 'Summarize selected text',
+      editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
+        if (!checking) {
+          summarizeSelection(editor, this.app, this.settings);
+        }
+        return true;
+      }
+    });
   }
 
   async saveSettings() {

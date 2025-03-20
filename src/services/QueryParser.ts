@@ -1,7 +1,6 @@
 import { LLMService } from './LLMService';
 
 export interface SearchFilters {
-  type?: string;
   tags?: string[];
   dateRange?: {
     start: Date;
@@ -117,7 +116,7 @@ USER QUERY: "${question}"
 
 Analyze this query and provide a structured JSON response with:
 1. searchTerms: The main concepts to search for
-2. filters: Any specific filtering criteria (tags, date ranges, note types)
+2. filters: Any specific filtering criteria (tags, date ranges)
 3. context: Additional information about the query's intent and requirements
 
 For date ranges, use these special time directions:
@@ -130,7 +129,6 @@ JSON RESPONSE FORMAT:
   "searchTerms": "core search terms",
   "filters": {
     "tags": ["tag1", "tag2"],
-    "type": ["note type", "another note type"],
     "dateRange": {
       "timeUnit": "year|month|week|day",
       "timeAmount": number,
@@ -174,7 +172,6 @@ EXAMPLES:
           searchTerms: string;
           filters: {
             tags?: string[];
-            type?: string;
             dateRange?: {
               timeUnit: string;
               timeAmount: number;
@@ -192,7 +189,7 @@ EXAMPLES:
 
         // Validate and process the analysis
         const result: QueryAnalysis = {
-          searchTerms: analysis.searchTerms || question,
+          searchTerms: analysis.searchTerms || question, // Simple fallback for null/undefined
           filters: {},
           context: {
             timeframe: analysis.context?.timeframe || '',
@@ -202,29 +199,15 @@ EXAMPLES:
           }
         };
 
+        // Only check for empty strings, which is a legitimate case to handle
+        if (result.searchTerms.trim() === '') {
+          console.warn('Empty search terms received, using original question');
+          result.searchTerms = question;
+        }
+
         // Process tags
         if (analysis.filters?.tags?.length) {
           result.filters.tags = analysis.filters.tags;
-        }
-
-        // Process type
-        if (analysis.filters?.type) {
-          // Handle both string and array formats for type
-          if (typeof analysis.filters.type === 'string') {
-            // Single type as string
-            result.filters.type = analysis.filters.type;
-          } else if (Array.isArray(analysis.filters.type)) {
-            // Type array - process all non-empty strings
-            const typeArray = analysis.filters.type as string[];
-            // Filter out empty strings and join with a common separator
-            const validTypes = typeArray.filter(t => typeof t === 'string' && t.trim() !== '');
-            if (validTypes.length === 1) {
-              result.filters.type = validTypes[0];
-            } else if (validTypes.length > 1) {
-              // Support multiple types by using a regex pattern in VectorStore
-              result.filters.type = validTypes.join('|');
-            }
-          }
         }
 
         // Process date range

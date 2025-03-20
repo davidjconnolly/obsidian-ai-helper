@@ -26,6 +26,8 @@ export class NotesChatbot {
         index: number;
         total: number;
         content: string;
+        bestMatchTerm?: string;  // Which search term matched best
+        score: number;           // Similarity score
       }>;
     }>();
 
@@ -49,25 +51,109 @@ export class NotesChatbot {
         fileGroups.set(filePath, group);
       }
 
-      group.relevantChunks.push(note.metadata.chunk);
+      // Include the best match term and score in the chunk info
+      group.relevantChunks.push({
+        ...note.metadata.chunk,
+        bestMatchTerm: note.bestMatchTerm,
+        score: note.score
+      });
     }
 
-    // Format each file with full content and chunk info
-    return Array.from(fileGroups.entries()).map(([path, { metadata, content, relevantChunks }]) => {
-      // Sort chunks by index
-      const sortedChunks = relevantChunks.sort((a, b) => a.index - b.index);
+    // Sort all file groups by the highest score they contain
+    const sortedGroups = Array.from(fileGroups.entries())
+      .map(([path, group]) => {
+        const highestScore = Math.max(...group.relevantChunks.map(c => c.score));
+        return { path, group, highestScore };
+      })
+      .sort((a, b) => b.highestScore - a.highestScore);
 
-      return `
-Note: ${metadata.title}
+    // Estimated tokens for base prompt and other elements (approximate)
+    const baseTokens = 1000;
+    const maxTokens = 16000; // Safe limit for most models, leaving room for response
+    let totalEstimatedTokens = baseTokens;
+    let formattedNotes: string[] = [];
+
+    // Format each file with full content and chunk info
+    for (const { path, group } of sortedGroups) {
+      // Sort chunks by index
+      const sortedChunks = group.relevantChunks.sort((a, b) => a.index - b.index);
+
+      // Create a section about relevance if we have best match terms
+      const relevanceSection = sortedChunks.some(c => c.bestMatchTerm)
+        ? `Relevance: ${sortedChunks
+            .filter(c => c.bestMatchTerm)
+            .map(c => `Part ${c.index} matches "${c.bestMatchTerm}" (score: ${c.score.toFixed(2)})`)
+            .join(', ')}`
+        : '';
+
+      // Truncate content if it's very large
+      let truncatedContent = group.content;
+      const contentTokenEstimate = this.estimateTokens(truncatedContent);
+
+      if (contentTokenEstimate > 4000) {
+        // If content is too large, only include the relevant chunks
+        truncatedContent = sortedChunks
+          .map(chunk => chunk.content)
+          .join('\n\n');
+        console.log(`Truncated long content for ${path} (estimated ${contentTokenEstimate} tokens)`);
+      }
+
+      const formattedNote = `
+Note: ${group.metadata.title}
 Path: ${path}
-Type: ${metadata.type || 'Unknown'}
-Tags: ${metadata.tags?.join(', ') || 'None'}
-Dates: ${metadata.dates?.join(', ') || 'None'}
+Tags: ${group.metadata.tags?.join(', ') || 'None'}
+Dates: ${group.metadata.dates?.join(', ') || 'None'}
+Contains Search Terms: ${sortedChunks.some(c => c.bestMatchTerm && this.contentContainsQuery(group.content, c.bestMatchTerm)) ? 'Yes' : 'No - included based on semantic similarity only'}
 Relevant Sections: Parts ${sortedChunks.map(c => c.index).join(', ')} of ${sortedChunks[0].total}
+${relevanceSection}
 Content:
-${content}
+${truncatedContent}
       `.trim();
-    }).join('\n\n');
+
+      // Estimate tokens for this note
+      const noteTokenEstimate = this.estimateTokens(formattedNote);
+
+      // Check if adding this note would exceed our limit
+      if (totalEstimatedTokens + noteTokenEstimate > maxTokens) {
+        console.warn(`Stopping note inclusion to prevent token overflow. Used ${totalEstimatedTokens}/${maxTokens} tokens.`);
+        break;
+      }
+
+      formattedNotes.push(formattedNote);
+      totalEstimatedTokens += noteTokenEstimate;
+    }
+
+    console.log(`Estimated total tokens for context: ${totalEstimatedTokens}`);
+
+    if (formattedNotes.length < fileGroups.size) {
+      const omitted = fileGroups.size - formattedNotes.length;
+      formattedNotes.push(`\n[Note: ${omitted} additional notes were omitted to prevent exceeding token limits]`);
+    }
+
+    return formattedNotes.join('\n\n');
+  }
+
+  // Simple heuristic to estimate tokens in a string
+  private estimateTokens(text: string): number {
+    // A rough heuristic: ~1.5 tokens per word for English
+    return Math.ceil(text.split(/\s+/).length * 1.5);
+  }
+
+  // Check if content contains the given query term
+  private contentContainsQuery(content: string, query: string): boolean {
+    if (!content || !query) {
+      return false;
+    }
+
+    const normalizedContent = content.toLowerCase();
+    const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 2);
+
+    // If no valid query terms, return false
+    if (queryTerms.length === 0) {
+      return false;
+    }
+
+    return queryTerms.some(term => normalizedContent.includes(term));
   }
 
   async processQuestion(question: string): Promise<{
@@ -78,11 +164,45 @@ ${content}
     const analysis = await this.queryParser.parseQuery(question);
     console.log('Query Analysis:', analysis);
 
+    // The QueryParser should provide a valid searchTerms, so we can
+    // use it directly - it will fall back to the question if needed
+    const searchTerms = analysis.searchTerms;
+    console.log('Search Terms:', searchTerms);
+
     // Get relevant notes using filters
-    const relevantNotes = await this.vectorStore.searchNotes(analysis.searchTerms, analysis.filters);
+    const relevantNotes = await this.vectorStore.searchNotes(searchTerms, analysis.filters);
+
+    // Group notes by best matched term for the prompt
+    const termGroups = new Map<string, number>();
+    relevantNotes.forEach(note => {
+      if (note.bestMatchTerm) {
+        const count = termGroups.get(note.bestMatchTerm) || 0;
+        termGroups.set(note.bestMatchTerm, count + 1);
+      }
+    });
+
+    // Create a summary of which search terms yielded results
+    const termSummary = Array.from(termGroups.entries())
+      .map(([term, count]) => `- "${term}": ${count} matching notes`)
+      .join('\n');
 
     // Format notes for the prompt
     const notesContext = await this.formatNotesForContext(relevantNotes);
+
+    // Check if content was truncated (by looking for the omitted notes message)
+    const contentTruncated = notesContext.includes('additional notes were omitted');
+
+    // Add information about analysis status to the prompt
+    let analysisInfo = analysis.searchTerms === question
+      ? "Note: I had difficulty analyzing your question and used the full question as search terms."
+      : "";
+
+    // If content was truncated, add a warning
+    if (contentTruncated) {
+      analysisInfo += analysisInfo ? "\n\n" : "";
+      analysisInfo += "Warning: Your query matched many notes. Some results were omitted to fit within model limits. Consider refining your search to be more specific.";
+      new Notice("Your query returned too many notes. Some results were omitted. Try being more specific.");
+    }
 
     // Create final prompt and get streaming response
     const finalPrompt = `
@@ -96,18 +216,33 @@ Search Context:
 - People: ${analysis.context.people || 'none mentioned'}
 - Actions: ${analysis.context.actions || 'not specified'}
 - Requirements: ${analysis.context.requirements || 'not specified'}
+${analysisInfo}
 
-Important:
-1. Base your answer only on the provided notes
-2. If the notes don't contain relevant information, say so
-3. Be concise but thorough
-4. If dates are mentioned in the question, only reference notes from that time period
-5. If specific people are mentioned, only reference their interactions
-6. Focus on addressing the specific requirements identified in the search context
+Search Strategy:
+I searched your notes with multiple related concepts and found matches for:
+${termSummary || '- No specific term matches found'}
+
+Important Guidelines:
+1. VERIFY KEY TERMS: First, verify that key entities or terms from the question (like specific names, places, or concepts) are actually present in the provided notes. If they are not present, clearly state this.
+2. BE PRECISE: When counting occurrences or analyzing specific elements, only count actual mentions in the text, not implied or semantically similar concepts.
+3. DISREGARD IRRELEVANT NOTES: Some retrieved notes may be semantically related but not directly relevant. If a note doesn't contain the key terms from the question, acknowledge this and focus on the truly relevant notes.
+4. BASE YOUR ANSWER ONLY on the provided notes, not on general knowledge.
+5. If the notes don't contain relevant information, say so clearly.
+6. Be concise but thorough.
+7. If dates are mentioned in the question, only reference notes from that time period.
+
+Your answer:
 `;
 
+    console.log('Sending request to LLM with relevant notes');
+
+    // Get streaming response
     const response = await this.llmService.streamCompletion(finalPrompt);
-    return { relevantNotes, response };
+
+    return {
+      relevantNotes,
+      response
+    };
   }
 
   abort() {
@@ -235,6 +370,12 @@ export class ChatbotModal extends Modal {
           // Update context panel with both notes and query
           this.updateContextPanel(relevantNotes, question);
 
+          // If no relevant notes were found, update the response text
+          if (relevantNotes.length === 0) {
+            botResponse.setText('No relevant notes were found for your query. Try a different question or check if your notes contain the information you\'re looking for.');
+            return;
+          }
+
           // Stream response
           await this.streamResponse(response, botResponse);
         } catch (error) {
@@ -308,7 +449,22 @@ export class ChatbotModal extends Modal {
           }`
         }
       });
-      matchEl.setText(note.matches ? 'Exact Match' : 'Semantically Related');
+
+      // Show the best match term if available, otherwise show generic match status
+      if (note.bestMatchTerm && note.score) {
+        if (note.matches) {
+          matchEl.setText(`Exact Match: "${note.bestMatchTerm}" (${note.score.toFixed(2)})`);
+        } else {
+          matchEl.setText(`Semantic Match: "${note.bestMatchTerm}" (${note.score.toFixed(2)})`);
+        }
+      } else {
+        matchEl.setText(note.matches ? 'Contains Search Terms' : 'Semantically Similar Only');
+      }
+
+      // Add a rank indicator if it's an exact match
+      if (note.matches) {
+        noteEl.style.borderLeft = '3px solid var(--interactive-success)';
+      }
 
       // Add metadata section
       const metadataEl = noteEl.createDiv({
@@ -317,7 +473,18 @@ export class ChatbotModal extends Modal {
 
       // Show why this note was selected
       let matchReason = '';
-      if (note.matches) {
+
+      // Show all term scores if available
+      if (note.termScores && note.termScores.length > 0) {
+        const topTerms = note.termScores
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 3); // Show top 3 terms
+
+        matchReason = `Matched terms: ${topTerms.map(t =>
+          `"${t.term}" (${t.score.toFixed(2)})`).join(', ')}`;
+      }
+      // Fallback to old logic if termScores not available
+      else if (note.matches) {
         // Find which search terms match in title/content
         const titleMatches = searchTerms.filter(term =>
           note.metadata.title.toLowerCase().includes(term)
@@ -334,7 +501,7 @@ export class ChatbotModal extends Modal {
         }
 
         // If no matches found but note.matches is true, something's wrong
-        if (!matchReason) {
+        if (!matchReason && note.matches) {
           console.log('Debug - Note marked as match but no terms found:', {
             searchTerms,
             title: note.metadata.title,
@@ -342,6 +509,8 @@ export class ChatbotModal extends Modal {
             note
           });
           matchReason = 'Marked as exact match but terms not found - please report this bug';
+        } else if (!matchReason) {
+          matchReason = 'No exact term matches. Included based on semantic similarity only.';
         }
       } else {
         matchReason = 'Content is semantically relevant to query';
@@ -351,13 +520,6 @@ export class ChatbotModal extends Modal {
         text: `Relevance: ${matchReason}`,
         attr: { style: 'margin-bottom:2px;' }
       });
-
-      if (note.metadata.type) {
-        metadataEl.createDiv({
-          text: `Type: ${note.metadata.type}`,
-          attr: { style: 'margin-bottom:2px;' }
-        });
-      }
 
       // Add tags if present
       if (note.metadata.tags?.length) {
@@ -402,25 +564,64 @@ export class ChatbotModal extends Modal {
     const decoder = new TextDecoder();
     let streamedText = 'Chatbot: ';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      let errorDetected = false;
 
-      const chunk = decoder.decode(value, { stream: true });
-      for (const line of chunk.split('\n')) {
-        if (line.startsWith('data: ')) {
-          try {
-            const json = JSON.parse(line.slice(6));
-            if (json.choices?.[0]?.delta?.content) {
-              streamedText += json.choices[0].delta.content;
-              botResponse.setText(streamedText);
-              botResponse.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+
+        // Check if the chunk contains an error message about context length
+        if (chunk.includes("context length") || chunk.includes("tokens when context")) {
+          errorDetected = true;
+          const errorMsg = 'Your query returned too many relevant notes, exceeding the model\'s context length limit. Please try a more specific query or reduce the amount of context being searched.';
+          botResponse.setText(errorMsg);
+          new Notice(errorMsg);
+          console.error('Context length exceeded:', chunk);
+          break;
+        }
+
+        for (const line of chunk.split('\n')) {
+          if (line.startsWith('data: ')) {
+            try {
+              const json = JSON.parse(line.slice(6));
+              if (json.choices?.[0]?.delta?.content) {
+                streamedText += json.choices[0].delta.content;
+                botResponse.setText(streamedText);
+                botResponse.scrollIntoView({ behavior: 'smooth', block: 'end' });
+              }
+              // Check for error in the streaming response
+              if (json.error) {
+                errorDetected = true;
+                const errorMsg = `Error from LLM API: ${json.error.message || 'Unknown error'}`;
+                botResponse.setText(errorMsg);
+                new Notice(errorMsg);
+                console.error('LLM streaming error:', json.error);
+                break;
+              }
+            } catch (error) {
+              console.warn('Failed to parse streaming chunk:', line);
+
+              // If this looks like an error message, display it
+              if (line.includes("error") || line.includes("Error")) {
+                botResponse.setText(`Error processing response: ${line}`);
+                errorDetected = true;
+                break;
+              }
             }
-          } catch (error) {
-            console.warn('Failed to parse streaming chunk:', line);
           }
         }
+
+        if (errorDetected) break;
       }
+    } catch (error) {
+      // Handle any errors that occur during streaming
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error during response streaming';
+      console.error('Stream processing error:', errorMessage);
+      botResponse.setText(`Error: ${errorMessage}`);
+      new Notice(`Failed to process response: ${errorMessage}`);
     }
   }
 

@@ -19,6 +19,9 @@ export interface NoteSearchResult {
   score: number;
   matches: boolean;  // Whether this result matches the search terms
   isHighestScoring: boolean;  // Whether this is the highest scoring chunk for this file
+  bestMatchTerm?: string;  // Which sub-term matched the best
+  avgScore?: number;  // Average score across all sub-terms
+  termScores?: { term: string; score: number }[];  // Individual scores for each sub-term
 }
 
 // Use the same type as NoteMetadata for consistency
@@ -44,7 +47,6 @@ const schema: AnySchema = {
     path: 'string' as SearchableType,
     tags: 'string[]' as SearchableType,
     dates: 'string[]' as SearchableType,
-    type: 'string' as SearchableType,
     frontmatter: 'string' as SearchableType,
     links: 'string[]' as SearchableType,
     chunk: {
@@ -90,42 +92,52 @@ export class VectorStore {
     }
   }
 
+  /**
+   * Enhanced search method that uses two-phase approach with sub-term analysis
+   */
   async searchNotes(query: string, filters?: SearchFilters): Promise<NoteSearchResult[]> {
     console.log('Original Query:', query);
     console.log('Filters:', JSON.stringify(filters, null, 2));
 
-    // Get query embedding using search terms and context
-    const searchText = [
-      query,
-      filters?.tags?.join(' ')
-    ].filter(Boolean).join(' ');
-
     try {
-      // Generate embedding for search query
-      console.log('Generating embedding for:', searchText);
-      const queryEmbedding = await this.llmService.getEmbedding(searchText);
-
-      // Create filter function based on provided filters
-      const filterFn = this.createFilterFunction(filters);
-
-      // Basic search first to get candidates
-      // Create a search query with proper where conditions
-      const searchOptions = {
-        limit: 20
-      };
-
-      // Only add where if we have filters
-      if (Object.keys(filterFn).length > 0) {
-        Object.assign(searchOptions, { where: filterFn });
+      // Simple validation - only warn for empty queries
+      if (!query?.trim()) {
+        console.warn('Empty search query received, results may be limited');
       }
 
-      console.log('Search options:', JSON.stringify(searchOptions, null, 2));
-      const searchResults = await search(this.vectorDB, searchOptions as any);
+      // PHASE 1: Metadata-based filtering
+      const filterFn = this.createFilterFunction(filters);
+      const metadataSearchOptions = {
+        limit: 1000  // Higher limit for phase 1
+      };
 
-      console.log(`Found ${searchResults.hits.length} initial candidates`);
+      if (Object.keys(filterFn).length > 0) {
+        Object.assign(metadataSearchOptions, { where: filterFn });
+      }
 
-      // Extract documents from search results
-      const candidateDocuments = searchResults.hits.map(hit => {
+      console.log('Phase 1 - Metadata filter options:', JSON.stringify(metadataSearchOptions, null, 2));
+      const metadataResults = await search(this.vectorDB, metadataSearchOptions as any);
+      console.log(`Phase 1 - Found ${metadataResults.hits.length} documents matching metadata filters`);
+
+      // If no metadata results or empty query, return early
+      if (metadataResults.hits.length === 0 || !query.trim()) {
+        return this.processSearchResults(metadataResults.hits.slice(0, 50), query);
+      }
+
+      // PHASE 2: Extract sub-terms and perform vector similarity search
+      const subTerms = await this.analyzeQueryForSearchTerms(query);
+      console.log('LLM extracted sub-terms:', subTerms);
+
+      // Get embeddings for all sub-terms
+      const embeddings: { term: string; embedding: number[] }[] = [];
+      for (const term of subTerms) {
+        console.log(`Generating embedding for sub-term: "${term}"`);
+        const embedding = await this.llmService.getEmbedding(term);
+        embeddings.push({ term, embedding });
+      }
+
+      // Extract candidate documents from metadata results
+      const candidateDocuments = metadataResults.hits.map(hit => {
         const doc = hit.document as unknown as VectorDBDocument;
         return {
           ...doc,
@@ -137,18 +149,188 @@ export class VectorStore {
         };
       });
 
-      // Compute similarity scores
-      const results = this.rankDocumentsByVector(candidateDocuments, queryEmbedding, query);
+      // Score documents against each sub-term embedding
+      const documentScores = new Map<string, {
+        doc: any,
+        scores: { term: string; score: number }[],
+        bestScore: number,
+        avgScore: number,
+        bestMatchTerm: string
+      }>();
 
-      // Only return results with scores above threshold
-      const threshold = 0.5;
-      const filteredResults = results.filter(result => result.score > threshold);
+      // For each document
+      for (const doc of candidateDocuments) {
+        const scores: { term: string; score: number }[] = [];
 
-      console.log(`Returning ${filteredResults.length} results after scoring`);
+        // Calculate similarity against each sub-term
+        for (const { term, embedding } of embeddings) {
+          const score = this.calculateCosineSimilarity(embedding, doc.vector);
+          scores.push({ term, score });
+        }
+
+        // Find best match and calculate average
+        const bestMatch = scores.reduce((best, current) =>
+          current.score > best.score ? current : best, scores[0]);
+        const bestScore = bestMatch.score;
+        const bestMatchTerm = bestMatch.term;
+        const avgScore = scores.reduce((sum, s) => sum + s.score, 0) / scores.length;
+
+        documentScores.set(doc.id, {
+          doc,
+          scores,
+          bestScore,
+          avgScore,
+          bestMatchTerm
+        });
+      }
+
+      // Create final results using a combined ranking approach
+      const scoredResults: NoteSearchResult[] = Array.from(documentScores.values()).map(({ doc, scores, bestScore, avgScore, bestMatchTerm }) => {
+        // Check if document contains any search terms
+        const containsSearchTerms = this.contentContainsQuery(doc.content, query);
+
+        return {
+          id: doc.id,
+          content: doc.content,
+          metadata: doc.metadata,
+          score: bestScore, // Primary score from best match
+          avgScore: avgScore, // Average score for secondary sorting
+          bestMatchTerm: bestMatchTerm, // Which term matched best
+          termScores: scores, // All individual scores
+          matches: containsSearchTerms,
+          isHighestScoring: false // Will be updated later
+        };
+      });
+
+      // Sort by exact matches first, then by semantic score
+      const sortedResults = scoredResults.sort((a, b) => {
+        // First prioritize exact matches
+        if (a.matches && !b.matches) return -1;
+        if (!a.matches && b.matches) return 1;
+
+        // If both have same match status, use semantic scores
+        if (Math.abs(a.score - b.score) < 0.05) { // If best scores are close
+          return b.avgScore! - a.avgScore!; // Use average score as tiebreaker
+        }
+        return b.score - a.score;
+      });
+
+      // Mark highest scoring chunks for each file
+      this.markHighestScoringChunks(sortedResults);
+
+      // Apply different thresholds based on match type
+      const exactMatchThreshold = 0.4;  // Lower threshold for exact matches
+      const semanticMatchThreshold = 0.6;  // Higher threshold for semantic-only matches
+
+      const filteredResults = sortedResults
+        .filter(result => {
+          // Keep exact matches with scores above exactMatchThreshold
+          if (result.matches) {
+            return result.score > exactMatchThreshold;
+          }
+          // Apply stricter threshold for semantic-only matches
+          return result.score > semanticMatchThreshold;
+        })
+        .slice(0, 50);
+
+      console.log(`Phase 2 - Returning ${filteredResults.length} results after scoring (Exact matches: ${filteredResults.filter(r => r.matches).length})`);
       return filteredResults;
     } catch (error) {
       console.error('Error searching notes:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Process search results without vector similarity
+   */
+  private processSearchResults(hits: any[], query: string): NoteSearchResult[] {
+    const documents = hits.map(hit => {
+      const doc = hit.document as unknown as VectorDBDocument;
+      return {
+        id: doc.id,
+        content: doc.metadata.chunk.content,
+        metadata: {
+          ...doc.metadata,
+          frontmatter: doc.metadata.frontmatter ? JSON.parse(doc.metadata.frontmatter) : {}
+        },
+        score: hit.score || 1.0,
+        matches: this.contentContainsQuery(doc.metadata.chunk.content, query),
+        isHighestScoring: true
+      };
+    });
+
+    return documents.slice(0, 50); // Limit to top 50 results
+  }
+
+  /**
+   * Mark the highest scoring chunk for each file
+   */
+  private markHighestScoringChunks(results: NoteSearchResult[]): void {
+    const fileGroups = new Map<string, NoteSearchResult[]>();
+
+    // Group by file path
+    for (const result of results) {
+      const path = result.metadata.path;
+      if (!fileGroups.has(path)) {
+        fileGroups.set(path, []);
+      }
+      fileGroups.get(path)!.push(result);
+    }
+
+    // Mark highest scoring for each group
+    for (const groupResults of fileGroups.values()) {
+      const highestScore = Math.max(...groupResults.map(r => r.score));
+      groupResults.forEach(result => {
+        result.isHighestScoring = (result.score === highestScore);
+      });
+    }
+  }
+
+  /**
+   * Use LLM to analyze query and extract meaningful search terms
+   */
+  async analyzeQueryForSearchTerms(query: string): Promise<string[]> {
+    if (!query || !query.trim()) {
+      return [query || ''];
+    }
+
+    const prompt = `
+Analyze this search query and extract the main concepts that should be searched for separately.
+Return these in a JSON array format with each concept as a separate string.
+Include both the full query and its important sub-components.
+
+QUERY: "${query}"
+
+For example, for the query "How does climate change affect agriculture in coastal regions?" return:
+["How does climate change affect agriculture in coastal regions?", "climate change", "agriculture", "coastal regions", "climate change effects on agriculture"]
+
+For "How many times have I spoken to Rick this year?" return:
+["How many times have I spoken to Rick this year?", "Rick", "conversations with Rick", "speaking", "communication"]
+
+Your response (JSON array only):
+`;
+
+    try {
+      const response = await this.llmService.getCompletion(prompt);
+      console.log('LLM term extraction response:', response);
+
+      const jsonMatch = response.match(/\[[\s\S]*\]/);
+
+      if (!jsonMatch) {
+        console.warn('Could not extract JSON array from LLM response, using fallback');
+        return [query];
+      }
+
+      const terms = JSON.parse(jsonMatch[0]) as string[];
+      // Ensure we have at least the original query
+      if (!terms.includes(query)) {
+        terms.unshift(query);
+      }
+      return terms;
+    } catch (error) {
+      console.error('Error analyzing query for search terms:', error);
+      return [query]; // Fallback to original query
     }
   }
 
@@ -169,23 +351,6 @@ export class VectorStore {
       filterObject['metadata.tags'] = {
         in: filters.tags
       };
-    }
-
-    // Add type filter
-    if (filters.type) {
-      // Check if we have multiple types (pipe-separated)
-      if (filters.type.includes('|')) {
-        const types = filters.type.split('|');
-        // Use 'in' operator for multiple types
-        filterObject['metadata.type'] = {
-          in: types
-        };
-      } else {
-        // Single type - use equality
-        filterObject['metadata.type'] = {
-          eq: filters.type
-        };
-      }
     }
 
     // Add date range filter
@@ -289,8 +454,17 @@ export class VectorStore {
    * Check if content contains any part of the query
    */
   private contentContainsQuery(content: string, query: string): boolean {
+    if (!content || !query) {
+      return false;
+    }
+
     const normalizedContent = content.toLowerCase();
     const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 2);
+
+    // If no valid query terms, return false
+    if (queryTerms.length === 0) {
+      return false;
+    }
 
     return queryTerms.some(term => normalizedContent.includes(term));
   }

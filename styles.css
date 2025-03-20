@@ -6,3 +6,89 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+/* Chat Modal Styles */
+.ai-helper-chat-modal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding: 12px;
+}
+
+.ai-helper-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  border-radius: 4px;
+  background-color: var(--background-primary);
+}
+
+.ai-helper-chat-message {
+  padding: 10px 12px;
+  border-radius: 10px;
+  max-width: 80%;
+  word-break: break-word;
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.ai-helper-chat-message-user {
+  background-color: var(--interactive-accent);
+  color: white;
+  align-self: flex-end;
+  border-bottom-right-radius: 3px;
+}
+
+.theme-dark .ai-helper-chat-message-user {
+  color: white;
+}
+
+.theme-light .ai-helper-chat-message-user {
+  color: white;
+}
+
+.ai-helper-chat-message-assistant {
+  background-color: var(--background-modifier-form-field);
+  align-self: flex-start;
+  border-bottom-left-radius: 3px;
+}
+
+.theme-dark .ai-helper-chat-message-assistant {
+  background-color: var(--interactive-accent-hover);
+  color: white;
+}
+
+.ai-helper-chat-loading {
+  opacity: 0.7;
+}
+
+.ai-helper-chat-input-container {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.ai-helper-chat-input {
+  width: 100%;
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  resize: vertical;
+  padding: 8px;
+  font-family: inherit;
+  min-height: 80px;
+}
+
+.ai-helper-chat-input:focus {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+/* Button styling */
+.ai-helper-chat-modal button.mod-cta {
+  align-self: flex-end;
+  padding: 8px 16px;
+}

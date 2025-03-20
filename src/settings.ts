@@ -12,6 +12,13 @@ export interface AIHelperSettings {
     apiKey: string;
     model: string;
   };
+  chatSettings: {
+    maxNotesToSearch: number;
+    contextWindowSize: number;
+    displayWelcomeMessageOnStartup: boolean;
+    includeTags: boolean;
+    includeTaskItems: boolean;
+  };
 }
 
 const DEFAULT_SETTINGS: AIHelperSettings = {
@@ -24,6 +31,13 @@ const DEFAULT_SETTINGS: AIHelperSettings = {
     url: 'https://api.openai.com/v1/chat/completions',
     apiKey: '',
     model: 'gpt-3.5-turbo',
+  },
+  chatSettings: {
+    maxNotesToSearch: 20,
+    contextWindowSize: 5,
+    displayWelcomeMessageOnStartup: true,
+    includeTags: true,
+    includeTaskItems: true,
   },
 };
 
@@ -116,6 +130,67 @@ export class AIHelperSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.localLLM.model)
           .onChange(async (value) => {
             this.plugin.settings.localLLM.model = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Chat Settings Section
+    new Setting(containerEl).setName('Chat settings').setHeading();
+    new Setting(containerEl)
+      .setName('Max notes to search')
+      .setDesc('Maximum number of notes to search when looking for context (higher numbers may slow down response time).')
+      .addSlider(slider =>
+        slider.setLimits(5, 50, 5)
+          .setValue(this.plugin.settings.chatSettings.maxNotesToSearch)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.chatSettings.maxNotesToSearch = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Context window size')
+      .setDesc('Number of most relevant notes to include in context for answering questions.')
+      .addSlider(slider =>
+        slider.setLimits(1, 10, 1)
+          .setValue(this.plugin.settings.chatSettings.contextWindowSize)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.chatSettings.contextWindowSize = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Display welcome message')
+      .setDesc('Display a welcome message when opening the chat modal.')
+      .addToggle(toggle =>
+        toggle.setValue(this.plugin.settings.chatSettings.displayWelcomeMessageOnStartup)
+          .onChange(async (value) => {
+            this.plugin.settings.chatSettings.displayWelcomeMessageOnStartup = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Include tags')
+      .setDesc('Include note tags in context for the AI to better understand categories and topics.')
+      .addToggle(toggle =>
+        toggle.setValue(this.plugin.settings.chatSettings.includeTags)
+          .onChange(async (value) => {
+            this.plugin.settings.chatSettings.includeTags = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Include task items')
+      .setDesc('Specifically search for and identify task items (- [ ]) in notes.')
+      .addToggle(toggle =>
+        toggle.setValue(this.plugin.settings.chatSettings.includeTaskItems)
+          .onChange(async (value) => {
+            this.plugin.settings.chatSettings.includeTaskItems = value;
             await this.plugin.saveSettings();
           })
       );

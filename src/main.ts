@@ -1,6 +1,7 @@
-import { Plugin, Menu, Editor, MarkdownView } from 'obsidian';
+import { Plugin, Menu, Editor, MarkdownView, Notice } from 'obsidian';
 import { AIHelperSettings, AIHelperSettingTab, loadSettings, saveSettings } from './settings';
 import { summarizeSelection } from './summarize';
+import { openChatModal } from './chat';
 
 export default class AIHelperPlugin extends Plugin {
   settings: AIHelperSettings;
@@ -22,7 +23,7 @@ export default class AIHelperPlugin extends Plugin {
     );
 
     this.addCommand({
-      id: 'open-chatbot-modal',
+      id: 'open-summarize-modal',
       name: 'Summarize selected text',
       editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
         if (!checking) {
@@ -30,6 +31,20 @@ export default class AIHelperPlugin extends Plugin {
         }
         return true;
       }
+    });
+
+    // Add new command for chat interface
+    this.addCommand({
+      id: 'open-chat-modal',
+      name: 'Open AI chat',
+      callback: () => {
+        openChatModal(this.app, this.settings);
+      }
+    });
+
+    // Add ribbon icon for chat
+    this.addRibbonIcon('message-square', 'AI chat', () => {
+      openChatModal(this.app, this.settings);
     });
   }
 

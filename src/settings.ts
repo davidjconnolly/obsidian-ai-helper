@@ -19,6 +19,7 @@ export interface AIHelperSettings {
     includeTags: boolean;
     includeTaskItems: boolean;
   };
+  debugMode: boolean;
 }
 
 const DEFAULT_SETTINGS: AIHelperSettings = {
@@ -39,6 +40,7 @@ const DEFAULT_SETTINGS: AIHelperSettings = {
     includeTags: true,
     includeTaskItems: true,
   },
+  debugMode: false,
 };
 
 export async function loadSettings(plugin: Plugin): Promise<AIHelperSettings> {
@@ -191,6 +193,19 @@ export class AIHelperSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.chatSettings.includeTaskItems)
           .onChange(async (value) => {
             this.plugin.settings.chatSettings.includeTaskItems = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Add Debug Mode toggle
+    new Setting(containerEl).setName('Developer options').setHeading();
+    new Setting(containerEl)
+      .setName('Debug mode')
+      .setDesc('Enable console debug logs for troubleshooting. Only use when necessary.')
+      .addToggle(toggle =>
+        toggle.setValue(this.plugin.settings.debugMode)
+          .onChange(async (value) => {
+            this.plugin.settings.debugMode = value;
             await this.plugin.saveSettings();
           })
       );

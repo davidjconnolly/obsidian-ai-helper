@@ -1,7 +1,8 @@
-import { Plugin, Menu, Editor, MarkdownView, Notice } from 'obsidian';
+import { Plugin, Menu, Editor, MarkdownView } from 'obsidian';
 import { AIHelperSettings, AIHelperSettingTab, loadSettings, saveSettings } from './settings';
 import { summarizeSelection } from './summarize';
 import { openChatModal } from './chat';
+import { debugLog } from './utils';
 
 export default class AIHelperPlugin extends Plugin {
   settings: AIHelperSettings;
@@ -53,6 +54,6 @@ export default class AIHelperPlugin extends Plugin {
   }
 
   onunload() {
-    console.log('AIHelper plugin unloaded');
+    debugLog(this.settings, 'AIHelper plugin unloaded');
   }
 }

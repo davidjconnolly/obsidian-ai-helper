@@ -1,5 +1,6 @@
-import { App, Modal, Notice, TFile, TFolder, getAllTags, parseFrontMatterTags } from 'obsidian';
+import { App, Modal, Notice, TFile, parseFrontMatterTags } from 'obsidian';
 import { AIHelperSettings } from './settings';
+import { debugLog } from './utils';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -30,6 +31,7 @@ class ChatModal extends Modal {
   sendButton: HTMLButtonElement;
   isProcessing: boolean = false;
   controller: AbortController;
+  private MAX_QUERY_LENGTH = 500;
 
   constructor(app: App, settings: AIHelperSettings) {
     super(app);
@@ -136,7 +138,7 @@ class ChatModal extends Modal {
           tasks
         });
       } catch (error) {
-        console.error(`Error loading note ${file.path}:`, error);
+        console.error(`Error loading note ${file.path}`, error);
       }
     }
   }
@@ -189,7 +191,7 @@ class ChatModal extends Modal {
       // Add assistant response
       this.addAssistantMessage(response);
     } catch (error) {
-      console.error('Error processing message:', error);
+      console.error('Error processing message', error);
       loadingEl.remove();
 
       // Provide more helpful error message based on error type
@@ -227,9 +229,16 @@ class ChatModal extends Modal {
   }
 
   async getRelevantContext(userQuery: string): Promise<string> {
+    if (!userQuery || typeof userQuery !== 'string') {
+      return "Invalid query format.";
+    }
+
+    // Limit query length to prevent running out of contex
+    const sanitizedQuery = userQuery.slice(0, this.MAX_QUERY_LENGTH);
+
     // Extract entities from query using LLM
-    const entityData = await this.extractEntitiesFromQuery(userQuery);
-    console.log("Extracted entities:", entityData);
+    const entityData = await this.extractEntitiesFromQuery(sanitizedQuery);
+    debugLog(this.settings, "Extracted entities", entityData);
 
     // Score notes based on extracted entities
     const scoredNotes: { note: NoteInfo; score: number; mentions: {[key: string]: number} }[] = [];
@@ -243,38 +252,59 @@ class ChatModal extends Modal {
 
       // Score based on people mentioned
       for (const person of entityData.people) {
-        const personRegex = new RegExp(`\\b${person.toLowerCase()}\\b`, 'gi');
-        const matches = content.match(personRegex);
-        if (matches && matches.length > 0) {
-          score += matches.length * 3; // Higher weight for people
-          mentions[person] = matches.length;
-        }
+        const sanitizedPerson = this.sanitizeRegexPattern(person.toLowerCase());
+        if (!sanitizedPerson) continue;
 
-        // Additional score for person in filename
-        if (fileName.toLowerCase().includes(person.toLowerCase())) {
-          score += 3;
-          if (!mentions[person]) mentions[person] = 0;
-          mentions[person]++;
+        try {
+          const personRegex = new RegExp(`\\b${sanitizedPerson}\\b`, 'gi');
+          const matches = content.match(personRegex);
+          if (matches && matches.length > 0) {
+            score += matches.length * 3; // Higher weight for people
+            mentions[person] = matches.length;
+          }
+
+          // Additional score for person in filename
+          if (fileName.includes(sanitizedPerson)) {
+            score += 3;
+            if (!mentions[person]) mentions[person] = 0;
+            mentions[person]++;
+          }
+        } catch (e) {
+          console.error(`Invalid regex pattern for person: ${person}`, e);
         }
       }
 
       // Score based on companies mentioned
       for (const company of entityData.companies) {
-        const companyRegex = new RegExp(`\\b${company.toLowerCase()}\\b`, 'gi');
-        const matches = content.match(companyRegex);
-        if (matches && matches.length > 0) {
-          score += matches.length * 2;
-          mentions[company] = matches.length;
+        const sanitizedCompany = this.sanitizeRegexPattern(company.toLowerCase());
+        if (!sanitizedCompany) continue;
+
+        try {
+          const companyRegex = new RegExp(`\\b${sanitizedCompany}\\b`, 'gi');
+          const matches = content.match(companyRegex);
+          if (matches && matches.length > 0) {
+            score += matches.length * 2;
+            mentions[company] = matches.length;
+          }
+        } catch (e) {
+          console.error(`Invalid regex pattern for company: ${company}`, e);
         }
       }
 
       // Score based on topics
       for (const topic of entityData.topics) {
-        const topicRegex = new RegExp(`\\b${topic.toLowerCase()}\\b`, 'gi');
-        const matches = content.match(topicRegex);
-        if (matches && matches.length > 0) {
-          score += matches.length;
-          mentions[topic] = matches.length;
+        const sanitizedTopic = this.sanitizeRegexPattern(topic.toLowerCase());
+        if (!sanitizedTopic) continue;
+
+        try {
+          const topicRegex = new RegExp(`\\b${sanitizedTopic}\\b`, 'gi');
+          const matches = content.match(topicRegex);
+          if (matches && matches.length > 0) {
+            score += matches.length;
+            mentions[topic] = matches.length;
+          }
+        } catch (e) {
+          console.error(`Invalid regex pattern for topic: ${topic}`, e);
         }
       }
 
@@ -305,7 +335,10 @@ class ChatModal extends Modal {
       // Check tags if enabled
       if (this.settings.chatSettings.includeTags) {
         for (const key of [...entityData.people, ...entityData.companies, ...entityData.topics]) {
-          const tagMatches = note.tags.filter(tag => tag.toLowerCase().includes(key.toLowerCase()));
+          const sanitizedKey = this.sanitizeRegexPattern(key.toLowerCase());
+          if (!sanitizedKey) continue;
+
+          const tagMatches = note.tags.filter(tag => tag.toLowerCase().includes(sanitizedKey));
           if (tagMatches.length > 0) {
             score += tagMatches.length * 1.5;
           }
@@ -322,13 +355,12 @@ class ChatModal extends Modal {
       }
     }
 
-    console.log("Query entities:", entityData);
+    debugLog(this.settings, "Query entities", entityData);
 
     // Sort by score descending
     scoredNotes.sort((a, b) => b.score - a.score);
 
-    // Log the top results for debugging
-    console.log("Top search results:",
+    debugLog(this.settings, "Top search results",
       scoredNotes.slice(0, 5).map(item => ({
         file: item.note.path,
         score: item.score,
@@ -373,7 +405,24 @@ class ChatModal extends Modal {
     return context;
   }
 
-  // New function that uses LLM to extract entities from the query
+  private sanitizeRegexPattern(pattern: string): string | null {
+    // Validate input: ensure it's a non-null string
+    if (!pattern || typeof pattern !== 'string') return null;
+
+    // Limit length to prevent performance issues with very long patterns
+    if (pattern.length > 100) pattern = pattern.substring(0, 100);
+
+    try {
+      // Test if it's a valid regex pattern by trying to create a regex
+      new RegExp(pattern);
+      // Escape special regex characters
+      return pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    } catch (e) {
+      console.error(`Invalid regex pattern: ${pattern}`, e);
+      return null;
+    }
+  }
+
   async extractEntitiesFromQuery(query: string): Promise<{
     people: string[];
     companies: string[];
@@ -387,6 +436,10 @@ class ChatModal extends Modal {
     isTaskQuery: boolean;
   }> {
     try {
+      if (!query || typeof query !== 'string') {
+        throw new Error("Invalid query format");
+      }
+
       const apiUrl = this.settings.apiChoice === 'openai' ? this.settings.openAI.url : this.settings.localLLM.url;
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       const isOpenAI = this.settings.apiChoice === 'openai';
@@ -434,15 +487,10 @@ Only include items that are explicitly or strongly implied in the query.
 `;
 
       // Format messages based on provider
-      const messages = isOpenAI ?
-        [
-          { role: 'system', content: 'You are an entity extraction assistant that returns valid JSON only.' },
-          { role: 'user', content: promptContent }
-        ] :
-        [
-          { role: 'system', content: 'You are an entity extraction assistant that returns valid JSON only.' },
-          { role: 'user', content: promptContent + "\n\nPlease only respond with valid JSON." }
-        ];
+      const messages = [
+        { role: 'system', content: 'You are an entity extraction assistant that returns valid JSON only.' },
+        { role: 'user', content: promptContent + "\n\nPlease only respond with valid JSON." }
+      ];
 
       // Create request
       const response = await fetch(apiUrl, {
@@ -465,42 +513,71 @@ Only include items that are explicitly or strongly implied in the query.
       let extractedText = responseData.choices[0].message.content.trim();
 
       // Safely parse the JSON, handling cases where LLM outputs additional text
-      let jsonMatch = extractedText.match(/\{[\s\S]*\}/);
-      let jsonText = jsonMatch ? jsonMatch[0] : extractedText;
+      let jsonData = {};
+      try {
+        // First try direct parsing
+        jsonData = JSON.parse(extractedText);
+      } catch (e) {
+        // If that fails, try to extract JSON object using regex
+        const jsonMatch = extractedText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            jsonData = JSON.parse(jsonMatch[0]);
+          } catch (e2) {
+            throw new Error("Failed to parse LLM response as JSON");
+          }
+        } else {
+          throw new Error("No valid JSON found in LLM response");
+        }
+      }
 
-      // Parse the JSON response
-      const entityData = JSON.parse(jsonText);
+      // Validate the parsed data structure
+      if (!jsonData || typeof jsonData !== 'object') {
+        throw new Error("Invalid JSON structure from LLM");
+      }
+
+      const entityData = jsonData as any;
 
       // Convert date strings to timestamps
       const result = {
-        people: entityData.people || [],
-        companies: entityData.companies || [],
-        topics: entityData.topics || [],
+        people: Array.isArray(entityData.people) ? entityData.people : [],
+        companies: Array.isArray(entityData.companies) ? entityData.companies : [],
+        topics: Array.isArray(entityData.topics) ? entityData.topics : [],
         timeRange: {
-          valid: entityData.timeRange?.valid || false,
+          valid: Boolean(entityData.timeRange?.valid),
           start: 0,
           end: 0,
-          description: entityData.timeRange?.description || ""
+          description: typeof entityData.timeRange?.description === 'string' ? entityData.timeRange.description : ""
         },
-        isTaskQuery: entityData.isTaskQuery || false
+        isTaskQuery: Boolean(entityData.isTaskQuery)
       };
 
       // Process time range if valid
-      if (entityData.timeRange?.valid) {
+      if (result.timeRange.valid) {
         try {
-          const startDate = new Date(entityData.timeRange.start);
-          const endDate = new Date(entityData.timeRange.end);
-          result.timeRange.start = startDate.getTime();
-          result.timeRange.end = endDate.getTime();
+          if (entityData.timeRange?.start && entityData.timeRange?.end) {
+            const startDate = new Date(entityData.timeRange.start);
+            const endDate = new Date(entityData.timeRange.end);
+
+            // Validate dates are actual dates
+            if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
+              result.timeRange.start = startDate.getTime();
+              result.timeRange.end = endDate.getTime();
+            } else {
+              result.timeRange.valid = false;
+            }
+          } else {
+            result.timeRange.valid = false;
+          }
         } catch (error) {
-          console.error("Error parsing dates:", error);
+          console.error("Error parsing dates", error);
           result.timeRange.valid = false;
         }
       }
 
       return result;
     } catch (error) {
-      console.error("Error extracting entities:", error);
+      console.error("Error extracting entities", error);
       // Return empty structure if extraction fails
       return {
         people: [],
@@ -514,6 +591,10 @@ Only include items that are explicitly or strongly implied in the query.
 
   async sendToLLM(userQuery: string, context: string): Promise<string> {
     try {
+      if (!userQuery || typeof userQuery !== 'string') {
+        return "Invalid query format. Please try again with a valid question.";
+      }
+
       const apiUrl = this.settings.apiChoice === 'openai' ? this.settings.openAI.url : this.settings.localLLM.url;
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       const isOpenAI = this.settings.apiChoice === 'openai';
@@ -593,13 +674,13 @@ Only include items that are explicitly or strongly implied in the query.
         max_tokens: 1500,
       };
 
-      console.log("Sending request to API: ", JSON.stringify({
+      debugLog(this.settings, "Sending request to API", {
         url: apiUrl,
         model: modelName,
         messageCount: apiMessages.length,
         isOpenAI: isOpenAI,
-        roles: apiMessages.map(m => m.role)
-      }));
+        messages: apiMessages
+      });
 
       const response = await fetch(apiUrl, {
         method: 'POST',

@@ -1,6 +1,8 @@
 import { App, Modal, Notice, TFile, parseFrontMatterTags } from 'obsidian';
 import { AIHelperSettings } from './settings';
 import { debugLog } from './utils';
+import { MarkdownRenderer } from 'obsidian';
+import { Component } from 'obsidian';
 
 interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -93,6 +95,9 @@ class ChatModal extends Modal {
     if (this.settings.chatSettings.displayWelcomeMessageOnStartup) {
       this.addAssistantMessage("Hello! I'm your AI assistant. I can help you find information in your notes, answer questions about your content, and identify patterns. What would you like to know?");
     }
+
+    // Set focus to input field
+    this.inputField.focus();
   }
 
   async loadNotesData() {
@@ -153,11 +158,47 @@ class ChatModal extends Modal {
   }
 
   addAssistantMessage(content: string) {
+    // Trim content to remove any leading/trailing whitespace
+    content = content.trim();
+
     this.messages.push({ role: 'assistant', content });
     const messageEl = this.messagesContainer.createEl('div', {
       cls: 'ai-helper-chat-message ai-helper-chat-message-assistant'
     });
-    messageEl.createEl('div', { text: content });
+
+    // Create content div for markdown rendering
+    const contentDiv = messageEl.createEl('div', { cls: 'markdown-preview' });
+
+    // Try to use Obsidian's Markdown renderer, fall back to basic HTML if it fails
+    try {
+      // Create a proper Component instance for rendering
+      const component = new Component();
+      component.load();
+
+      // Use the modern non-deprecated MarkdownRenderer.render method
+      MarkdownRenderer.render(
+        this.app,
+        content,
+        contentDiv,
+        '',
+        component
+      );
+    } catch (e) {
+      // Fallback to simpler rendering with regex-based markdown conversion
+      const formattedContent = content
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') // Bold text
+        .replace(/\*(.*?)\*/g, '<em>$1</em>') // Italic text
+        .replace(/\n\n/g, '<br><br>') // Paragraph breaks
+        .replace(/\n/g, '<br>') // Line breaks
+        .replace(/^### (.*$)/gm, '<h3>$1</h3>') // H3 headers
+        .replace(/^## (.*$)/gm, '<h2>$1</h2>') // H2 headers
+        .replace(/^# (.*$)/gm, '<h1>$1</h1>') // H1 headers
+        .replace(/^\* (.*$)/gm, '<ul><li>$1</li></ul>') // Unordered list
+        .replace(/^\d\. (.*$)/gm, '<ol><li>$1</li></ol>'); // Ordered list
+
+      contentDiv.innerHTML = formattedContent;
+    }
+
     this.messagesContainer.scrollTo({ top: this.messagesContainer.scrollHeight, behavior: 'smooth' });
   }
 
@@ -225,6 +266,9 @@ class ChatModal extends Modal {
       this.isProcessing = false;
       this.sendButton.disabled = false;
       this.inputField.disabled = false;
+
+      // Return focus to input field after processing completes
+      this.inputField.focus();
     }
   }
 
@@ -616,55 +660,25 @@ Only include items that are explicitly or strongly implied in the query.
         console.warn(`No model specified for ${this.settings.apiChoice}, using default: ${modelName}`);
       }
 
-      // Format messages differently based on provider
-      let apiMessages;
+      // Simple, unified approach for both API types:
+      // 1. Add context as a system message
+      // 2. Keep all existing messages with their proper roles
 
-      if (isOpenAI) {
-        // OpenAI accepts system, user, and assistant roles
-        const systemContextMessage = {
-          role: 'system',
-          content: `You are a helpful assistant that answers questions about the user's Obsidian notes. Use the following context to help answer their questions. Only reference information that is present in the context or chat history. If you don't know something or it's not in the context, admit that you don't know rather than making up information.\n\nCONTEXT:\n${context}`
-        };
+      // Create a copy of the current messages
+      const existingMessages = [...this.messages];
 
-        apiMessages = [
-          this.messages[0], // Initial system message
-          systemContextMessage, // Context-specific system message
-          ...this.messages.slice(1) // All user and assistant messages
-        ];
-      } else {
-        // Local LLMs (LM Studio) only support system and user roles
-        // Create a conversation that represents our history but only uses system and user roles
+      // Add context information as a system message
+      const contextMessage = {
+        role: 'system',
+        content: `Context from the user's notes:\n${context}`
+      };
 
-        // Start with system instructions
-        apiMessages = [
-          {
-            role: 'system',
-            content: `${this.messages[0].content}\n\nContext from notes:\n${context}`
-          }
-        ];
-
-        // Convert the conversation history into a single user message
-        let conversationText = "";
-
-        // Process all messages except the initial system message
-        for (let i = 1; i < this.messages.length; i++) {
-          const msg = this.messages[i];
-          if (msg.role === 'user') {
-            conversationText += `User: ${msg.content}\n\n`;
-          } else if (msg.role === 'assistant') {
-            conversationText += `Assistant: ${msg.content}\n\n`;
-          }
-        }
-
-        // Add the current query
-        conversationText += `User: ${userQuery}\n\nAssistant: `;
-
-        // Add as user message
-        apiMessages.push({
-          role: 'user',
-          content: conversationText
-        });
-      }
+      // Insert context after the first system message
+      const apiMessages = [
+        existingMessages[0],  // Initial system message with instructions
+        contextMessage,       // Context as a system message
+        ...existingMessages.slice(1) // All previous conversation messages
+      ];
 
       // Create request body
       const requestBody = {

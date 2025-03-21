@@ -60,6 +60,12 @@ If your plugin does not need CSS, delete this file.
   color: white;
 }
 
+/* Markdown preview inside assistant messages */
+.ai-helper-chat-message-assistant .markdown-preview p {
+  margin: 0;
+  padding: 0;
+}
+
 .ai-helper-chat-loading {
   opacity: 0.7;
 }
@@ -91,4 +97,12 @@ If your plugin does not need CSS, delete this file.
 .ai-helper-chat-modal button.mod-cta {
   align-self: flex-end;
   padding: 8px 16px;
+}
+
+/* Button container styling */
+.ai-helper-button-container {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
 }

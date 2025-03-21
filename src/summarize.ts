@@ -68,8 +68,7 @@ class AIHelperModal extends Modal {
     });
 
     const buttonContainer = contentEl.createEl('div', {
-      cls: 'button-container',
-      attr: { style: 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;' }
+      cls: 'ai-helper-button-container'
     });
 
     const inlineButton = buttonContainer.createEl('button', { text: 'Insert inline', cls: 'mod-cta', attr: { disabled: 'true' } });

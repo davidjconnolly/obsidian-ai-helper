@@ -34,6 +34,10 @@ class ChatModal extends Modal {
   isProcessing: boolean = false;
   controller: AbortController;
   private MAX_QUERY_LENGTH = 500;
+  // Track notes currently in context
+  currentContextNotes: { note: NoteInfo; score: number; mentions: {[key: string]: number}; selectionReasons: string[] }[] = [];
+  contextSidebar: HTMLElement;
+  contextNotesContainer: HTMLElement;
 
   constructor(app: App, settings: AIHelperSettings) {
     super(app);
@@ -53,13 +57,18 @@ class ChatModal extends Modal {
     contentEl.empty();
     contentEl.addClass('ai-helper-chat-modal');
 
+    // Create main content area
+    const mainContent = contentEl.createEl('div', {
+      cls: 'ai-helper-chat-main'
+    });
+
     // Create messages container
-    this.messagesContainer = contentEl.createEl('div', {
+    this.messagesContainer = mainContent.createEl('div', {
       cls: 'ai-helper-chat-messages'
     });
 
     // Input area
-    const inputContainer = contentEl.createEl('div', {
+    const inputContainer = mainContent.createEl('div', {
       cls: 'ai-helper-chat-input-container'
     });
 
@@ -85,6 +94,25 @@ class ChatModal extends Modal {
     this.sendButton.addEventListener('click', () => {
       this.sendMessage();
     });
+
+    // Create context sidebar
+    this.contextSidebar = contentEl.createEl('div', {
+      cls: 'ai-helper-context-sidebar'
+    });
+
+    // Add header to sidebar
+    this.contextSidebar.createEl('div', {
+      cls: 'ai-helper-context-header',
+      text: 'Notes in Context'
+    });
+
+    // Container for context notes
+    this.contextNotesContainer = this.contextSidebar.createEl('div', {
+      cls: 'ai-helper-context-notes'
+    });
+
+    // Initialize empty context sidebar
+    this.updateContextSidebar();
 
     // Initial loading of notes data
     new Notice('Loading notes data...');
@@ -285,7 +313,12 @@ class ChatModal extends Modal {
     debugLog(this.settings, "Extracted entities", entityData);
 
     // Score notes based on extracted entities
-    const scoredNotes: { note: NoteInfo; score: number; mentions: {[key: string]: number} }[] = [];
+    const scoredNotes: {
+      note: NoteInfo;
+      score: number;
+      mentions: {[key: string]: number};
+      selectionReasons: string[];
+    }[] = [];
     const currentTime = Date.now();
 
     for (const note of this.allNotes) {
@@ -293,6 +326,7 @@ class ChatModal extends Modal {
       const content = note.content.toLowerCase();
       const fileName = note.file.basename.toLowerCase();
       const mentions: {[key: string]: number} = {};
+      const selectionReasons: string[] = [];
 
       // Score based on people mentioned
       for (const person of entityData.people) {
@@ -305,6 +339,7 @@ class ChatModal extends Modal {
           if (matches && matches.length > 0) {
             score += matches.length * 3; // Higher weight for people
             mentions[person] = matches.length;
+            selectionReasons.push(`Contains person "${person}" (${matches.length} matches, +${matches.length * 3} points)`);
           }
 
           // Additional score for person in filename
@@ -312,6 +347,7 @@ class ChatModal extends Modal {
             score += 3;
             if (!mentions[person]) mentions[person] = 0;
             mentions[person]++;
+            selectionReasons.push(`Filename contains "${person}" (+3 points)`);
           }
         } catch (e) {
           console.error(`Invalid regex pattern for person: ${person}`, e);
@@ -329,6 +365,7 @@ class ChatModal extends Modal {
           if (matches && matches.length > 0) {
             score += matches.length * 2;
             mentions[company] = matches.length;
+            selectionReasons.push(`Contains company "${company}" (${matches.length} matches, +${matches.length * 2} points)`);
           }
         } catch (e) {
           console.error(`Invalid regex pattern for company: ${company}`, e);
@@ -346,6 +383,7 @@ class ChatModal extends Modal {
           if (matches && matches.length > 0) {
             score += matches.length;
             mentions[topic] = matches.length;
+            selectionReasons.push(`Contains topic "${topic}" (${matches.length} matches, +${matches.length} points)`);
           }
         } catch (e) {
           console.error(`Invalid regex pattern for topic: ${topic}`, e);
@@ -362,8 +400,10 @@ class ChatModal extends Modal {
         // Use creation date as the primary filter for time range
         if (noteCreationTime >= entityData.timeRange.start && noteCreationTime <= entityData.timeRange.end) {
           score += 6; // Higher bonus for creation date within range
+          selectionReasons.push(`Creation date within time range "${entityData.timeRange.description}" (+6 points)`);
         } else if (noteModifiedTime >= entityData.timeRange.start && noteModifiedTime <= entityData.timeRange.end) {
           score += 2; // Smaller bonus for modification date within range
+          selectionReasons.push(`Modified date within time range "${entityData.timeRange.description}" (+2 points)`);
         } else {
           // Skip this note entirely - it's outside the time range
           continue; // Skip to the next note
@@ -374,6 +414,8 @@ class ChatModal extends Modal {
       const oneWeekAgo = currentTime - 7 * 24 * 60 * 60 * 1000;
       if (note.modified > oneWeekAgo) {
         score += 1;
+        const daysAgo = Math.round((currentTime - note.modified) / (24 * 60 * 60 * 1000));
+        selectionReasons.push(`Recently modified (${daysAgo} days ago, +1 point)`);
       }
 
       // Check tags if enabled
@@ -385,6 +427,7 @@ class ChatModal extends Modal {
           const tagMatches = note.tags.filter(tag => tag.toLowerCase().includes(sanitizedKey));
           if (tagMatches.length > 0) {
             score += tagMatches.length * 1.5;
+            selectionReasons.push(`Has relevant tags: ${tagMatches.join(", ")} (+${tagMatches.length * 1.5} points)`);
           }
         }
       }
@@ -392,10 +435,11 @@ class ChatModal extends Modal {
       // Special handling for task queries
       if (entityData.isTaskQuery && note.tasks.length > 0) {
         score += 4;
+        selectionReasons.push(`Contains tasks (${note.tasks.length} tasks, +4 points)`);
       }
 
       if (score > 0) {
-        scoredNotes.push({ note, score, mentions });
+        scoredNotes.push({ note, score, mentions, selectionReasons });
       }
     }
 
@@ -414,6 +458,10 @@ class ChatModal extends Modal {
 
     // Take top results based on contextWindowSize setting
     const topNotes = scoredNotes.slice(0, this.settings.chatSettings.contextWindowSize);
+
+    // Update the current context notes for display in sidebar
+    this.currentContextNotes = [...topNotes];
+    this.updateContextSidebar();
 
     if (topNotes.length === 0) {
       return "No relevant notes found.";
@@ -727,5 +775,81 @@ Only include items that are explicitly or strongly implied in the query.
     this.controller.abort();
     const { contentEl } = this;
     contentEl.empty();
+  }
+
+  // Update the context sidebar with current notes
+  updateContextSidebar() {
+    this.contextNotesContainer.empty();
+
+    if (this.currentContextNotes.length === 0) {
+      this.contextNotesContainer.createEl('div', {
+        text: 'No notes in context yet. Ask a question to see relevant notes.',
+        cls: 'ai-helper-context-empty'
+      });
+      return;
+    }
+
+    for (const {note, score, mentions, selectionReasons} of this.currentContextNotes) {
+      const noteEl = this.contextNotesContainer.createEl('div', {
+        cls: 'ai-helper-context-note'
+      });
+
+      // Note title (using basename or path)
+      noteEl.createEl('div', {
+        text: note.file.basename,
+        cls: 'ai-helper-context-note-title',
+        attr: {
+          title: note.file.basename
+        }
+      });
+
+      // Path
+      noteEl.createEl('div', {
+        text: note.path,
+        cls: 'ai-helper-context-note-path',
+        attr: {
+          title: note.path
+        }
+      });
+
+      // Score
+      noteEl.createEl('div', {
+        text: `Relevance Score: ${score}`,
+        cls: 'ai-helper-context-note-score'
+      });
+
+      // Detailed selection reasons
+      if (selectionReasons && selectionReasons.length > 0) {
+        const reasonsContainer = noteEl.createEl('div', {
+          cls: 'ai-helper-context-note-reasons'
+        });
+
+        reasonsContainer.createEl('div', {
+          text: 'Selection reasons:',
+          cls: 'ai-helper-context-note-reasons-header'
+        });
+
+        const reasonsList = reasonsContainer.createEl('ul', {
+          cls: 'ai-helper-context-note-reasons-list'
+        });
+
+        selectionReasons.forEach(reason => {
+          reasonsList.createEl('li', {
+            text: reason
+          });
+        });
+
+        // Prevent click on reasons from opening the note
+        reasonsContainer.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+      }
+
+      // Click event to open the note
+      noteEl.addEventListener('click', () => {
+        const file = note.file;
+        this.app.workspace.openLinkText(file.path, '', true);
+      });
+    }
   }
 }

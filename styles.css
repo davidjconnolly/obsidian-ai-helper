@@ -10,10 +10,101 @@ If your plugin does not need CSS, delete this file.
 /* Chat Modal Styles */
 .ai-helper-chat-modal {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   width: 100%;
   height: 100%;
+}
+
+.ai-helper-chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   padding: 12px;
+  overflow: hidden;
+}
+
+.ai-helper-context-sidebar {
+  width: 250px;
+  border-left: 1px solid var(--background-modifier-border);
+  background-color: var(--background-secondary);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-helper-context-header {
+  padding: 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-weight: bold;
+  background-color: var(--background-secondary-alt);
+}
+
+.ai-helper-context-notes {
+  padding: 10px;
+  overflow-y: auto;
+}
+
+.ai-helper-context-note {
+  padding: 8px;
+  margin-bottom: 12px;
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  cursor: pointer;
+  font-size: 0.85em;
+  border: 1px solid transparent;
+}
+
+.ai-helper-context-note:hover {
+  border-color: var(--interactive-accent);
+}
+
+.ai-helper-context-note-title {
+  font-weight: bold;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-helper-context-note-path {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-helper-context-note-score {
+  margin-top: 4px;
+  font-size: 0.9em;
+  color: var(--text-accent);
+  font-weight: bold;
+}
+
+/* Selection reasons styling */
+.ai-helper-context-note-reasons {
+  margin-top: 6px;
+  font-size: 0.8em;
+  background-color: var(--background-secondary);
+  border-radius: 4px;
+  padding: 6px;
+  cursor: default;
+}
+
+.ai-helper-context-note-reasons-header {
+  color: var(--text-normal);
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.ai-helper-context-note-reasons-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+
+.ai-helper-context-note-reasons-list li {
+  margin-bottom: 2px;
 }
 
 .ai-helper-chat-messages {

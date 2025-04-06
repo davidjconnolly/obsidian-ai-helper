@@ -61,15 +61,13 @@ class AIHelperModal extends Modal {
     const markdownPreview = contentEl.createEl('textarea', {
       cls: 'summary-preview',
       attr: {
-        style: 'width: 100%; height: 50vh; overflow-y: auto; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; resize: none;',
         disabled: 'true'
       },
       text: 'Waiting for input...'
     });
 
     const buttonContainer = contentEl.createEl('div', {
-      cls: 'button-container',
-      attr: { style: 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;' }
+      cls: 'ai-helper-summary-button-container'
     });
 
     const inlineButton = buttonContainer.createEl('button', { text: 'Insert inline', cls: 'mod-cta', attr: { disabled: 'true' } });

@@ -1,5 +1,5 @@
 import { App, Editor, Notice, Modal } from 'obsidian';
-import { AIHelperSettings } from './settings';
+import { Settings } from './settings';
 
 export enum ModalAction {
   inline,
@@ -7,7 +7,7 @@ export enum ModalAction {
   copy
 }
 
-export async function summarizeSelection(editor: Editor, app: App, settings: AIHelperSettings) {
+export async function summarizeSelection(editor: Editor, app: App, settings: Settings) {
   const selectedText = editor.getSelection();
   if (!selectedText) {
     new Notice('No text selected');
@@ -16,12 +16,12 @@ export async function summarizeSelection(editor: Editor, app: App, settings: AIH
 
   const modal = new AIHelperModal(app, selectedText, settings, async (finalSummary: string, action: ModalAction) => {
     if (action === ModalAction.inline) {
-      editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}\n`);
+      editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}`);
     } else if (action === ModalAction.summarize) {
       const currentContent = editor.getValue();
-      const summarySection = `----\n# Summary\n${finalSummary}\n\n----\n\n`;
-      editor.setValue(summarySection + currentContent);
-      editor.setCursor(editor.offsetToPos(summarySection.length));
+      const summarySection = `# Summary\n\n${finalSummary.trim()}\n\n----`;
+      editor.setValue(`${summarySection}\n\n${currentContent}`);
+      editor.setCursor(editor.offsetToPos(summarySection.length + 2));
     } else if (action === ModalAction.copy) {
       navigator.clipboard.writeText(finalSummary).then(() => {
         new Notice('Summary copied to clipboard');
@@ -38,12 +38,12 @@ export async function summarizeSelection(editor: Editor, app: App, settings: AIH
 class AIHelperModal extends Modal {
   text: string;
   onSubmit: (summary: string, action: ModalAction) => void;
-  settings: AIHelperSettings;
+  settings: Settings;
   summary: string;
   isStreaming: boolean;
   controller: AbortController;
 
-  constructor(app: App, text: string, settings: AIHelperSettings, onSubmit: (summary: string, action: ModalAction) => void) {
+  constructor(app: App, text: string, settings: Settings, onSubmit: (summary: string, action: ModalAction) => void) {
     super(app);
     this.text = text;
     this.settings = settings;
@@ -59,7 +59,7 @@ class AIHelperModal extends Modal {
     contentEl.empty();
 
     const markdownPreview = contentEl.createEl('textarea', {
-      cls: 'markdown-preview',
+      cls: 'summary-preview',
       attr: {
         style: 'width: 100%; height: 50vh; overflow-y: auto; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; resize: none;',
         disabled: 'true'
@@ -68,7 +68,8 @@ class AIHelperModal extends Modal {
     });
 
     const buttonContainer = contentEl.createEl('div', {
-      cls: 'ai-helper-button-container'
+      cls: 'button-container',
+      attr: { style: 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;' }
     });
 
     const inlineButton = buttonContainer.createEl('button', { text: 'Insert inline', cls: 'mod-cta', attr: { disabled: 'true' } });
@@ -96,22 +97,27 @@ class AIHelperModal extends Modal {
 
   async streamSummary(markdownPreview: HTMLTextAreaElement, inlineButton: HTMLButtonElement, summarizeButton: HTMLButtonElement, copyButton: HTMLButtonElement) {
     try {
-      const apiUrl = this.settings.apiChoice === 'openai' ? this.settings.openAI.url : this.settings.localLLM.url;
+      const apiUrl = this.settings.localLLMSettings.enabled ? this.settings.localLLMSettings.apiUrl : this.settings.openAISettings.apiUrl;
+
+      if (!apiUrl) {
+        throw new Error('API URL is not configured');
+      }
+
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.settings.apiChoice === 'openai') {
-        headers['Authorization'] = `Bearer ${this.settings.openAI.apiKey}`;
+
+      if (!this.settings.localLLMSettings.enabled) {
+        headers['Authorization'] = `Bearer ${this.settings.openAISettings.apiKey}`;
       }
 
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: this.settings.apiChoice === 'openai' ? this.settings.openAI.model : this.settings.localLLM.model,
+          model: this.settings.localLLMSettings.enabled ? this.settings.localLLMSettings.modelName : this.settings.openAISettings.modelName,
           messages: [
             { role: 'system', content: 'You are an expert at summarizing text clearly and concisely.' },
             { role: 'system', content: 'I will provide short snippets of text, often without context. Summarize them briefly and accurately.' },
-            { role: 'system', content: 'Provide the summary in raw GitHub Markdown format without any additional explanation or formatting.' },
-            { role: 'system', content: 'Use headings sparingly—only when absolutely necessary to clarify lengthy or complex concepts. Avoid headings entirely for short, simple summaries.' },
+            { role: 'system', content: 'Provide clear, direct summaries without any special formatting or markdown.' },
             { role: 'user', content: `Summarize the following text:\n\n${this.text}` }
           ],
           stream: true

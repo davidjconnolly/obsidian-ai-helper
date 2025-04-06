@@ -1,37 +1,48 @@
 import { Plugin, PluginSettingTab, App, Setting } from 'obsidian';
 import AIHelperPlugin from './main';
 
-export interface AIHelperSettings {
-  apiChoice: 'local' | 'openai';
-  localLLM: {
-    url: string;
-    model: string;
-  };
-  openAI: {
-    url: string;
-    apiKey: string;
-    model: string;
-  };
-  chatSettings: {
-    maxNotesToSearch: number;
-    contextWindowSize: number;
-    displayWelcomeMessageOnStartup: boolean;
-    includeTags: boolean;
-    includeTaskItems: boolean;
-  };
-  debugMode: boolean;
+export interface OpenAISettings {
+  apiKey: string;
+  modelName: string;
+  apiUrl?: string;
 }
 
-const DEFAULT_SETTINGS: AIHelperSettings = {
+export interface LocalLLMSettings {
+  apiUrl: string;
+  apiKey?: string;
+  modelName: string;
+  enabled: boolean;
+}
+
+export interface ChatSettings {
+  maxNotesToSearch: number;
+  contextWindowSize: number;
+  displayWelcomeMessageOnStartup: boolean;
+  includeTags: boolean;
+  includeTaskItems: boolean;
+}
+
+export interface Settings {
+  openAISettings: OpenAISettings;
+  localLLMSettings: LocalLLMSettings;
+  chatSettings: ChatSettings;
+  openChatOnStartup: boolean;
+  debugMode: boolean;
+  apiChoice: 'local' | 'openai';
+}
+
+export const DEFAULT_SETTINGS: Settings = {
   apiChoice: 'local',
-  localLLM: {
-    url: 'http://127.0.0.1:1234/v1/chat/completions',
-    model: '',
-  },
-  openAI: {
-    url: 'https://api.openai.com/v1/chat/completions',
+  openAISettings: {
     apiKey: '',
-    model: 'gpt-3.5-turbo',
+    modelName: 'gpt-3.5-turbo',
+    apiUrl: 'https://api.openai.com/v1/chat/completions'
+  },
+  localLLMSettings: {
+    apiUrl: 'http://localhost:1234/v1/chat/completions',
+    apiKey: '',
+    modelName: 'mistral-7b-instruct',
+    enabled: false
   },
   chatSettings: {
     maxNotesToSearch: 20,
@@ -40,15 +51,129 @@ const DEFAULT_SETTINGS: AIHelperSettings = {
     includeTags: true,
     includeTaskItems: true,
   },
-  debugMode: false,
+  openChatOnStartup: false,
+  debugMode: false
 };
 
-export async function loadSettings(plugin: Plugin): Promise<AIHelperSettings> {
+export async function loadSettings(plugin: Plugin): Promise<Settings> {
   return Object.assign({}, DEFAULT_SETTINGS, await plugin.loadData());
 }
 
-export async function saveSettings(plugin: Plugin, settings: AIHelperSettings): Promise<void> {
+export async function saveSettings(plugin: Plugin, settings: Settings): Promise<void> {
   await plugin.saveData(settings);
+}
+
+export class SettingsTab extends PluginSettingTab {
+  plugin: AIHelperPlugin;
+
+  constructor(app: App, plugin: AIHelperPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+
+    new Setting(containerEl)
+      .setName('AI Provider')
+      .setDesc('Choose which LLM provider to use')
+      .addDropdown(dropdown =>
+        dropdown
+          .addOption('openai', 'OpenAI')
+          .addOption('local', 'Local LLM (LM Studio)')
+          .setValue(this.plugin.settings.localLLMSettings.enabled ? 'local' : 'openai')
+          .onChange(async (value) => {
+            this.plugin.settings.localLLMSettings.enabled = value === 'local';
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // OpenAI Settings
+    containerEl.createEl('h3', { text: 'OpenAI Settings' });
+
+    new Setting(containerEl)
+      .setName('OpenAI API Key')
+      .setDesc('Enter your OpenAI API key')
+      .addText(text =>
+        text
+          .setPlaceholder('sk-...')
+          .setValue(this.plugin.settings.openAISettings.apiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.openAISettings.apiKey = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('OpenAI Model')
+      .setDesc('The model to use for chat completions')
+      .addText(text =>
+        text
+          .setPlaceholder('gpt-3.5-turbo')
+          .setValue(this.plugin.settings.openAISettings.modelName)
+          .onChange(async (value) => {
+            this.plugin.settings.openAISettings.modelName = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // Local LLM Settings
+    containerEl.createEl('h3', { text: 'Local LLM Settings' });
+
+    new Setting(containerEl)
+      .setName('LM Studio API URL')
+      .setDesc('The URL for your local LLM server (typically LM Studio)')
+      .addText(text =>
+        text
+          .setPlaceholder('http://localhost:1234/v1/chat/completions')
+          .setValue(this.plugin.settings.localLLMSettings.apiUrl)
+          .onChange(async (value) => {
+            this.plugin.settings.localLLMSettings.apiUrl = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Local LLM Model Name')
+      .setDesc('The model name to use with your local LLM')
+      .addText(text =>
+        text
+          .setPlaceholder('mistral-7b-instruct')
+          .setValue(this.plugin.settings.localLLMSettings.modelName)
+          .onChange(async (value) => {
+            this.plugin.settings.localLLMSettings.modelName = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    // General Settings
+    containerEl.createEl('h3', { text: 'General Settings' });
+
+    new Setting(containerEl)
+      .setName('Open chat on startup')
+      .setDesc('Automatically open the AI chat when Obsidian starts')
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.openChatOnStartup)
+          .onChange(async (value) => {
+            this.plugin.settings.openChatOnStartup = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Debug Mode')
+      .setDesc('Enable debug logging in the console')
+      .addToggle(toggle =>
+        toggle
+          .setValue(this.plugin.settings.debugMode)
+          .onChange(async (value) => {
+            this.plugin.settings.debugMode = value;
+            await this.plugin.saveSettings();
+          })
+      );
+  }
 }
 
 export class AIHelperSettingTab extends PluginSettingTab {
@@ -82,9 +207,9 @@ export class AIHelperSettingTab extends PluginSettingTab {
       .setDesc('Enter the API URL for your OpenAI server.')
       .addText(text =>
         text.setPlaceholder('https://api.openai.com/v1/chat/completions')
-          .setValue(this.plugin.settings.openAI.url)
+          .setValue(this.plugin.settings.openAISettings.apiUrl || '')
           .onChange(async (value) => {
-            this.plugin.settings.openAI.url = value;
+            this.plugin.settings.openAISettings.apiUrl = value;
             await this.plugin.saveSettings();
           })
       );
@@ -93,9 +218,9 @@ export class AIHelperSettingTab extends PluginSettingTab {
       .setDesc('Enter your OpenAI API key if using OpenAI.')
       .addText(text =>
         text.setPlaceholder('sk-...')
-          .setValue(this.plugin.settings.openAI.apiKey)
+          .setValue(this.plugin.settings.openAISettings.apiKey)
           .onChange(async (value) => {
-            this.plugin.settings.openAI.apiKey = value;
+            this.plugin.settings.openAISettings.apiKey = value;
             await this.plugin.saveSettings();
           })
       );
@@ -104,9 +229,9 @@ export class AIHelperSettingTab extends PluginSettingTab {
       .setDesc('Enter the model\'s API identifier for OpenAI.')
       .addText(text =>
         text.setPlaceholder('gpt-3.5-turbo')
-          .setValue(this.plugin.settings.openAI.model)
+          .setValue(this.plugin.settings.openAISettings.modelName)
           .onChange(async (value) => {
-            this.plugin.settings.openAI.model = value;
+            this.plugin.settings.openAISettings.modelName = value;
             await this.plugin.saveSettings();
           })
       );
@@ -118,9 +243,9 @@ export class AIHelperSettingTab extends PluginSettingTab {
       .setDesc('Enter the API URL for your local LLM server.')
       .addText(text =>
         text.setPlaceholder('http://127.0.0.1:1234/v1/chat/completions')
-          .setValue(this.plugin.settings.localLLM.url)
+          .setValue(this.plugin.settings.localLLMSettings.apiUrl)
           .onChange(async (value) => {
-            this.plugin.settings.localLLM.url = value;
+            this.plugin.settings.localLLMSettings.apiUrl = value;
             await this.plugin.saveSettings();
           })
       );
@@ -129,9 +254,9 @@ export class AIHelperSettingTab extends PluginSettingTab {
       .setDesc('Enter the model\'s API identifier for your local LLM server.')
       .addText(text =>
         text.setPlaceholder('Identifier')
-          .setValue(this.plugin.settings.localLLM.model)
+          .setValue(this.plugin.settings.localLLMSettings.modelName)
           .onChange(async (value) => {
-            this.plugin.settings.localLLM.model = value;
+            this.plugin.settings.localLLMSettings.modelName = value;
             await this.plugin.saveSettings();
           })
       );

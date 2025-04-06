@@ -1,59 +1,81 @@
-import { Plugin, Menu, Editor, MarkdownView } from 'obsidian';
-import { AIHelperSettings, AIHelperSettingTab, loadSettings, saveSettings } from './settings';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { AI_CHAT_VIEW_TYPE, AIChatView, openAIChat } from './chat';
+import { DEFAULT_SETTINGS, Settings, SettingsTab } from './settings';
 import { summarizeSelection } from './summarize';
-import { openChatModal } from './chat';
-import { debugLog } from './utils';
 
 export default class AIHelperPlugin extends Plugin {
-  settings: AIHelperSettings;
+	settings: Settings;
 
-  async onload() {
-    this.settings = await loadSettings(this);
-    this.addSettingTab(new AIHelperSettingTab(this.app, this));
+	async onload() {
+		await this.loadSettings();
 
-    this.registerEvent(
-      this.app.workspace.on('editor-menu', (menu: Menu, editor: Editor) => {
-        menu.addItem((item) => {
-          item.setTitle('Summarize selected text')
-            .setIcon('pencil')
-            .onClick(() => {
-              summarizeSelection(editor, this.app, this.settings);
-            });
-        });
-      })
-    );
+		// Register the AI Chat view
+		this.registerView(
+			AI_CHAT_VIEW_TYPE,
+			(leaf) => new AIChatView(leaf, this.settings)
+		);
 
-    this.addCommand({
-      id: 'open-summarize-modal',
-      name: 'Summarize selected text',
-      editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView) => {
-        if (!checking) {
-          summarizeSelection(editor, this.app, this.settings);
-        }
-        return true;
-      }
-    });
+		// Add a command to summarize text
+		this.addCommand({
+			id: 'summarize-text',
+			name: 'Summarize selected text or current note',
+			editorCallback: (editor: Editor, view: MarkdownView) => {
+				const text = editor.getSelection() || editor.getValue();
+				summarizeSelection(editor, this.app, this.settings);
+			}
+		});
 
-    // Add new command for chat interface
-    this.addCommand({
-      id: 'open-chat-modal',
-      name: 'Open AI chat',
-      callback: () => {
-        openChatModal(this.app, this.settings);
-      }
-    });
+		// Add a command to open the AI chat interface
+		this.addCommand({
+			id: 'open-ai-chat',
+			name: 'Open AI Chat',
+			callback: () => {
+				openAIChat(this.app);
+			}
+		});
 
-    // Add ribbon icon for chat
-    this.addRibbonIcon('message-square', 'AI chat', () => {
-      openChatModal(this.app, this.settings);
-    });
-  }
+		// Add a ribbon icon for AI chat
+		this.addRibbonIcon('message-square', 'Open AI Chat', (evt: MouseEvent) => {
+			openAIChat(this.app);
+		});
 
-  async saveSettings() {
-    await saveSettings(this, this.settings);
-  }
+		// Add settings tab
+		this.addSettingTab(new SettingsTab(this.app, this));
 
-  onunload() {
-    debugLog(this.settings, 'AIHelper plugin unloaded');
-  }
+		// Register context menu event
+		this.registerEvent(
+			this.app.workspace.on('editor-menu', (menu, editor) => {
+				menu.addItem((item) => {
+					item
+						.setTitle('Summarize text')
+						.setIcon('file-text')
+						.onClick(() => {
+							const text = editor.getSelection() || editor.getValue();
+							summarizeSelection(editor, this.app, this.settings);
+						});
+				});
+			})
+		);
+
+		// If the plugin was just activated, open the AI chat view
+		// Do this with a small delay to ensure other plugins have time to initialize
+		setTimeout(() => {
+			if (this.settings.openChatOnStartup) {
+				openAIChat(this.app);
+			}
+		}, 500);
+	}
+
+	onunload() {
+		// Detach any active views when the plugin is unloaded
+		this.app.workspace.detachLeavesOfType(AI_CHAT_VIEW_TYPE);
+	}
+
+	async loadSettings() {
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
 }

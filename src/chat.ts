@@ -1,855 +1,630 @@
-import { App, Modal, Notice, TFile, parseFrontMatterTags } from 'obsidian';
-import { AIHelperSettings } from './settings';
-import { debugLog } from './utils';
-import { MarkdownRenderer } from 'obsidian';
-import { Component } from 'obsidian';
+import { App, Notice, Modal, request, TFile, normalizePath, setIcon, parseYaml, MarkdownView, requestUrl, RequestUrlParam, RequestUrlResponse, SuggestModal, ButtonComponent, MarkdownRenderer, addIcon, Notice as Notice2 } from 'obsidian';
+import { getDeduplicatedFileContents, debugLog, extractFrontmatter } from './utils';
+import { LocalLLMSettings, OpenAISettings, Settings } from './settings';
+import { ItemView, WorkspaceLeaf } from 'obsidian';
 
+// Define the view type for the AI Chat
+export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
+
+// Interface for a chat message
 interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+    role: 'system' | 'user' | 'assistant';
+    content: string;
 }
 
-interface NoteInfo {
-  file: TFile;
-  content: string;
-  created: number;
-  modified: number;
-  path: string;
-  tags: string[];
-  tasks: string[];
+// Interface for relevant notes and their context
+interface NoteWithContent {
+    file: TFile;
+    content: string;
+    score?: number;
+    selectionReasons?: { [key: string]: number | string };
 }
 
-export async function openChatModal(app: App, settings: AIHelperSettings) {
-  const modal = new ChatModal(app, settings);
-  modal.open();
+type EntityType = 'note' | 'tag' | 'task' | 'heading';
+
+interface Entity {
+    type: EntityType;
+    value: string;
+    count?: number;
 }
 
-class ChatModal extends Modal {
-  settings: AIHelperSettings;
-  messages: ChatMessage[] = [];
-  allNotes: NoteInfo[] = [];
-  messagesContainer: HTMLElement;
-  inputField: HTMLTextAreaElement;
-  sendButton: HTMLButtonElement;
-  isProcessing: boolean = false;
-  controller: AbortController;
-  private MAX_QUERY_LENGTH = 500;
-  // Track notes currently in context
-  currentContextNotes: { note: NoteInfo; score: number; mentions: {[key: string]: number}; selectionReasons: string[] }[] = [];
-  contextSidebar: HTMLElement;
-  contextNotesContainer: HTMLElement;
+// Open AI Chat sidebar view
+export function openAIChat(app: App): void {
+    // Check if view already exists
+    const existingLeaves = app.workspace.getLeavesOfType(AI_CHAT_VIEW_TYPE);
 
-  constructor(app: App, settings: AIHelperSettings) {
-    super(app);
-    this.settings = settings;
-    this.controller = new AbortController();
-
-    // Add initial system message
-    this.messages.push({
-      role: 'system',
-      content: 'You are a helpful assistant that answers questions about the user\'s notes. You can search through notes, find connections, summarize content, and extract information like tasks, dates, and people mentioned. Be concise, accurate, and helpful.'
-    });
-  }
-
-  async onOpen() {
-    this.titleEl.setText('AI Chat');
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.addClass('ai-helper-chat-modal');
-
-    // Create main content area
-    const mainContent = contentEl.createEl('div', {
-      cls: 'ai-helper-chat-main'
-    });
-
-    // Create messages container
-    this.messagesContainer = mainContent.createEl('div', {
-      cls: 'ai-helper-chat-messages'
-    });
-
-    // Input area
-    const inputContainer = mainContent.createEl('div', {
-      cls: 'ai-helper-chat-input-container'
-    });
-
-    this.inputField = inputContainer.createEl('textarea', {
-      cls: 'ai-helper-chat-input',
-      attr: {
-        placeholder: 'Ask me anything about your notes...'
-      }
-    });
-
-    this.inputField.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        this.sendMessage();
-      }
-    });
-
-    this.sendButton = inputContainer.createEl('button', {
-      text: 'Send',
-      cls: 'mod-cta'
-    });
-
-    this.sendButton.addEventListener('click', () => {
-      this.sendMessage();
-    });
-
-    // Create context sidebar
-    this.contextSidebar = contentEl.createEl('div', {
-      cls: 'ai-helper-context-sidebar'
-    });
-
-    // Add header to sidebar
-    this.contextSidebar.createEl('div', {
-      cls: 'ai-helper-context-header',
-      text: 'Notes in Context'
-    });
-
-    // Container for context notes
-    this.contextNotesContainer = this.contextSidebar.createEl('div', {
-      cls: 'ai-helper-context-notes'
-    });
-
-    // Initialize empty context sidebar
-    this.updateContextSidebar();
-
-    // Initial loading of notes data
-    new Notice('Loading notes data...');
-    await this.loadNotesData();
-    new Notice('Notes data loaded');
-
-    // Add welcome message if enabled in settings
-    if (this.settings.chatSettings.displayWelcomeMessageOnStartup) {
-      this.addAssistantMessage("Hello! I'm your AI assistant. I can help you find information in your notes, answer questions about your content, and identify patterns. What would you like to know?");
+    if (existingLeaves.length) {
+        // Focus existing leaf
+        app.workspace.revealLeaf(existingLeaves[0]);
+        return;
     }
 
-    // Set focus to input field
-    this.inputField.focus();
-  }
-
-  async loadNotesData() {
-    this.allNotes = [];
-    const files = this.app.vault.getMarkdownFiles();
-
-    for (const file of files) {
-      try {
-        const content = await this.app.vault.read(file);
-        const cacheMeta = this.app.metadataCache.getFileCache(file);
-        const tags = this.settings.chatSettings.includeTags ?
-          (cacheMeta?.tags ? cacheMeta.tags.map(t => t.tag) : []) : [];
-
-        // Add frontmatter tags if include tags is enabled
-        if (this.settings.chatSettings.includeTags && cacheMeta?.frontmatter && cacheMeta.frontmatter.tags) {
-          const frontmatterTags = parseFrontMatterTags(cacheMeta.frontmatter.tags);
-          if (frontmatterTags) {
-            frontmatterTags.forEach(tag => {
-              if (!tags.includes(tag)) {
-                tags.push(tag);
-              }
-            });
-          }
-        }
-
-        // Extract tasks if enabled
-        const tasks: string[] = [];
-        if (this.settings.chatSettings.includeTaskItems) {
-          const taskRegex = /- \[([ x])\] (.+)$/gm;
-          let match;
-          while ((match = taskRegex.exec(content)) !== null) {
-            tasks.push(match[0]);
-          }
-        }
-
-        this.allNotes.push({
-          file,
-          content,
-          created: file.stat.ctime,
-          modified: file.stat.mtime,
-          path: file.path,
-          tags,
-          tasks
+    // Create a new leaf in the right sidebar
+    const leaf = app.workspace.getRightLeaf(false);
+    if (leaf) {
+        // Create the view in the new leaf
+        leaf.setViewState({
+            type: AI_CHAT_VIEW_TYPE,
         });
-      } catch (error) {
-        console.error(`Error loading note ${file.path}`, error);
-      }
+
+        // Reveal the leaf
+        app.workspace.revealLeaf(leaf);
     }
-  }
-
-  addUserMessage(content: string) {
-    this.messages.push({ role: 'user', content });
-    const messageEl = this.messagesContainer.createEl('div', {
-      cls: 'ai-helper-chat-message ai-helper-chat-message-user'
-    });
-    messageEl.createEl('div', { text: content });
-    this.messagesContainer.scrollTo({ top: this.messagesContainer.scrollHeight, behavior: 'smooth' });
-  }
-
-  addAssistantMessage(content: string) {
-    // Trim content to remove any leading/trailing whitespace
-    content = content.trim();
-
-    this.messages.push({ role: 'assistant', content });
-    const messageEl = this.messagesContainer.createEl('div', {
-      cls: 'ai-helper-chat-message ai-helper-chat-message-assistant'
-    });
-
-    // Create content div for markdown rendering
-    const contentDiv = messageEl.createEl('div', { cls: 'markdown-preview' });
-
-    // Try to use Obsidian's Markdown renderer, fall back to basic HTML if it fails
-    try {
-      // Create a proper Component instance for rendering
-      const component = new Component();
-      component.load();
-
-      // Use the modern non-deprecated MarkdownRenderer.render method
-      MarkdownRenderer.render(
-        this.app,
-        content,
-        contentDiv,
-        '',
-        component
-      );
-    } catch (e) {
-      // Fallback to simpler rendering with regex-based markdown conversion
-      const formattedContent = content
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') // Bold text
-        .replace(/\*(.*?)\*/g, '<em>$1</em>') // Italic text
-        .replace(/\n\n/g, '<br><br>') // Paragraph breaks
-        .replace(/\n/g, '<br>') // Line breaks
-        .replace(/^### (.*$)/gm, '<h3>$1</h3>') // H3 headers
-        .replace(/^## (.*$)/gm, '<h2>$1</h2>') // H2 headers
-        .replace(/^# (.*$)/gm, '<h1>$1</h1>') // H1 headers
-        .replace(/^\* (.*$)/gm, '<ul><li>$1</li></ul>') // Unordered list
-        .replace(/^\d\. (.*$)/gm, '<ol><li>$1</li></ol>'); // Ordered list
-
-      contentDiv.innerHTML = formattedContent;
-    }
-
-    this.messagesContainer.scrollTo({ top: this.messagesContainer.scrollHeight, behavior: 'smooth' });
-  }
-
-  async sendMessage() {
-    if (this.isProcessing) return;
-
-    const userInput = this.inputField.value.trim();
-    if (!userInput) return;
-
-    this.addUserMessage(userInput);
-    this.inputField.value = '';
-
-    this.isProcessing = true;
-    this.sendButton.disabled = true;
-    this.inputField.disabled = true;
-
-    // Create loading indicator
-    const loadingEl = this.messagesContainer.createEl('div', {
-      cls: 'ai-helper-chat-message ai-helper-chat-message-assistant ai-helper-chat-loading'
-    });
-    loadingEl.createEl('div', { text: 'Thinking...' });
-    this.messagesContainer.scrollTo({ top: this.messagesContainer.scrollHeight, behavior: 'smooth' });
-
-    try {
-      const relevantContext = await this.getRelevantContext(userInput);
-      const response = await this.sendToLLM(userInput, relevantContext);
-
-      // Remove loading indicator
-      loadingEl.remove();
-
-      // Add assistant response
-      this.addAssistantMessage(response);
-    } catch (error) {
-      console.error('Error processing message', error);
-      loadingEl.remove();
-
-      // Provide more helpful error message based on error type
-      let errorMessage = 'Sorry, I encountered an error while processing your request. Please try again.';
-
-      if (error instanceof Error) {
-        if (error.message.includes('API key is missing')) {
-          errorMessage = 'API key is missing. Please add an API key in the settings.';
-        } else if (error.message.includes('HTTP error! Status: 400')) {
-          // Add specific LM Studio error handling
-          if (error.message.includes('Conversation roles must alternate')) {
-            errorMessage = 'The LM Studio API requires specific role formatting. Using only system and user roles now. Please try again.';
-          } else if (error.message.includes('jinja template')) {
-            errorMessage = 'The LM Studio model has a template issue. This plugin now uses only system and user roles which should be compatible. Please try again, or try a different model in LM Studio.';
-          } else if (error.message.includes('assistant')) {
-            errorMessage = 'The LM Studio API appears to not support the assistant role. This has been fixed. Please try again.';
-          } else {
-            errorMessage = 'The AI service rejected the request. This may be due to an invalid model name or format issue. Please check your settings.';
-          }
-        } else if (error.message.includes('HTTP error! Status: 401') || error.message.includes('HTTP error! Status: 403')) {
-          errorMessage = 'Authentication error. Please check your API key in the settings.';
-        } else if (error.message.includes('HTTP error! Status: 404')) {
-          errorMessage = 'API endpoint not found. Please check the API URL in your settings.';
-        } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
-          errorMessage = 'Network error. Please make sure your local LLM server is running or you have internet connectivity for OpenAI.';
-        }
-      }
-
-      this.addAssistantMessage(errorMessage);
-    } finally {
-      this.isProcessing = false;
-      this.sendButton.disabled = false;
-      this.inputField.disabled = false;
-
-      // Return focus to input field after processing completes
-      this.inputField.focus();
-    }
-  }
-
-  async getRelevantContext(userQuery: string): Promise<string> {
-    if (!userQuery || typeof userQuery !== 'string') {
-      return "Invalid query format.";
-    }
-
-    // Limit query length to prevent running out of contex
-    const sanitizedQuery = userQuery.slice(0, this.MAX_QUERY_LENGTH);
-
-    // Extract entities from query using LLM
-    const entityData = await this.extractEntitiesFromQuery(sanitizedQuery);
-    debugLog(this.settings, "Extracted entities", entityData);
-
-    // Score notes based on extracted entities
-    const scoredNotes: {
-      note: NoteInfo;
-      score: number;
-      mentions: {[key: string]: number};
-      selectionReasons: string[];
-    }[] = [];
-    const currentTime = Date.now();
-
-    for (const note of this.allNotes) {
-      let score = 0;
-      const content = note.content.toLowerCase();
-      const fileName = note.file.basename.toLowerCase();
-      const mentions: {[key: string]: number} = {};
-      const selectionReasons: string[] = [];
-
-      // Score based on people mentioned
-      for (const person of entityData.people) {
-        const sanitizedPerson = this.sanitizeRegexPattern(person.toLowerCase());
-        if (!sanitizedPerson) continue;
-
-        try {
-          const personRegex = new RegExp(`\\b${sanitizedPerson}\\b`, 'gi');
-          const matches = content.match(personRegex);
-          if (matches && matches.length > 0) {
-            score += matches.length * 3; // Higher weight for people
-            mentions[person] = matches.length;
-            selectionReasons.push(`Contains person "${person}" (${matches.length} matches, +${matches.length * 3} points)`);
-          }
-
-          // Additional score for person in filename
-          if (fileName.includes(sanitizedPerson)) {
-            score += 3;
-            if (!mentions[person]) mentions[person] = 0;
-            mentions[person]++;
-            selectionReasons.push(`Filename contains "${person}" (+3 points)`);
-          }
-        } catch (e) {
-          console.error(`Invalid regex pattern for person: ${person}`, e);
-        }
-      }
-
-      // Score based on companies mentioned
-      for (const company of entityData.companies) {
-        const sanitizedCompany = this.sanitizeRegexPattern(company.toLowerCase());
-        if (!sanitizedCompany) continue;
-
-        try {
-          const companyRegex = new RegExp(`\\b${sanitizedCompany}\\b`, 'gi');
-          const matches = content.match(companyRegex);
-          if (matches && matches.length > 0) {
-            score += matches.length * 2;
-            mentions[company] = matches.length;
-            selectionReasons.push(`Contains company "${company}" (${matches.length} matches, +${matches.length * 2} points)`);
-          }
-        } catch (e) {
-          console.error(`Invalid regex pattern for company: ${company}`, e);
-        }
-      }
-
-      // Score based on topics
-      for (const topic of entityData.topics) {
-        const sanitizedTopic = this.sanitizeRegexPattern(topic.toLowerCase());
-        if (!sanitizedTopic) continue;
-
-        try {
-          const topicRegex = new RegExp(`\\b${sanitizedTopic}\\b`, 'gi');
-          const matches = content.match(topicRegex);
-          if (matches && matches.length > 0) {
-            score += matches.length;
-            mentions[topic] = matches.length;
-            selectionReasons.push(`Contains topic "${topic}" (${matches.length} matches, +${matches.length} points)`);
-          }
-        } catch (e) {
-          console.error(`Invalid regex pattern for topic: ${topic}`, e);
-        }
-      }
-
-      // Apply time range filtering if present
-      if (entityData.timeRange.valid) {
-        // Use created date instead of modified date for time-bound searches
-        const noteCreationTime = note.created;
-        const noteModifiedTime = note.modified;
-
-        // Check if either creation date or modification date is within range
-        // Use creation date as the primary filter for time range
-        if (noteCreationTime >= entityData.timeRange.start && noteCreationTime <= entityData.timeRange.end) {
-          score += 6; // Higher bonus for creation date within range
-          selectionReasons.push(`Creation date within time range "${entityData.timeRange.description}" (+6 points)`);
-        } else if (noteModifiedTime >= entityData.timeRange.start && noteModifiedTime <= entityData.timeRange.end) {
-          score += 2; // Smaller bonus for modification date within range
-          selectionReasons.push(`Modified date within time range "${entityData.timeRange.description}" (+2 points)`);
-        } else {
-          // Skip this note entirely - it's outside the time range
-          continue; // Skip to the next note
-        }
-      }
-
-      // Add recency bonus
-      const oneWeekAgo = currentTime - 7 * 24 * 60 * 60 * 1000;
-      if (note.modified > oneWeekAgo) {
-        score += 1;
-        const daysAgo = Math.round((currentTime - note.modified) / (24 * 60 * 60 * 1000));
-        selectionReasons.push(`Recently modified (${daysAgo} days ago, +1 point)`);
-      }
-
-      // Check tags if enabled
-      if (this.settings.chatSettings.includeTags) {
-        for (const key of [...entityData.people, ...entityData.companies, ...entityData.topics]) {
-          const sanitizedKey = this.sanitizeRegexPattern(key.toLowerCase());
-          if (!sanitizedKey) continue;
-
-          const tagMatches = note.tags.filter(tag => tag.toLowerCase().includes(sanitizedKey));
-          if (tagMatches.length > 0) {
-            score += tagMatches.length * 1.5;
-            selectionReasons.push(`Has relevant tags: ${tagMatches.join(", ")} (+${tagMatches.length * 1.5} points)`);
-          }
-        }
-      }
-
-      // Special handling for task queries
-      if (entityData.isTaskQuery && note.tasks.length > 0) {
-        score += 4;
-        selectionReasons.push(`Contains tasks (${note.tasks.length} tasks, +4 points)`);
-      }
-
-      if (score > 0) {
-        scoredNotes.push({ note, score, mentions, selectionReasons });
-      }
-    }
-
-    debugLog(this.settings, "Query entities", entityData);
-
-    // Sort by score descending
-    scoredNotes.sort((a, b) => b.score - a.score);
-
-    debugLog(this.settings, "Top search results",
-      scoredNotes.slice(0, 5).map(item => ({
-        file: item.note.path,
-        score: item.score,
-        mentions: item.mentions
-      }))
-    );
-
-    // Take top results based on contextWindowSize setting
-    const topNotes = scoredNotes.slice(0, this.settings.chatSettings.contextWindowSize);
-
-    // Update the current context notes for display in sidebar
-    this.currentContextNotes = [...topNotes];
-    this.updateContextSidebar();
-
-    if (topNotes.length === 0) {
-      return "No relevant notes found.";
-    }
-
-    let context = "Here are relevant notes from the user's vault:\n\n";
-
-    for (const { note, mentions } of topNotes) {
-      context += `FILE: ${note.path}\n`;
-      context += `CREATED: ${new Date(note.created).toISOString()}\n`;
-      context += `MODIFIED: ${new Date(note.modified).toISOString()}\n`;
-
-      // Add mention counts for important search terms
-      const mentionList = Object.entries(mentions)
-        .filter(([term, count]) => count > 0)
-        .map(([term, count]) => `${term}: ${count} mentions`);
-
-      if (mentionList.length > 0) {
-        context += `MENTIONS: ${mentionList.join(', ')}\n`;
-      }
-
-      if (this.settings.chatSettings.includeTags && note.tags.length > 0) {
-        context += `TAGS: ${note.tags.join(', ')}\n`;
-      }
-
-      if (this.settings.chatSettings.includeTaskItems && note.tasks.length > 0) {
-        context += "TASKS:\n" + note.tasks.map(task => `- ${task}`).join('\n') + "\n";
-      }
-
-      context += `CONTENT:\n${note.content}\n\n`;
-    }
-
-    return context;
-  }
-
-  private sanitizeRegexPattern(pattern: string): string | null {
-    // Validate input: ensure it's a non-null string
-    if (!pattern || typeof pattern !== 'string') return null;
-
-    // Limit length to prevent performance issues with very long patterns
-    if (pattern.length > 100) pattern = pattern.substring(0, 100);
-
-    try {
-      // Test if it's a valid regex pattern by trying to create a regex
-      new RegExp(pattern);
-      // Escape special regex characters
-      return pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    } catch (e) {
-      console.error(`Invalid regex pattern: ${pattern}`, e);
-      return null;
-    }
-  }
-
-  async extractEntitiesFromQuery(query: string): Promise<{
-    people: string[];
-    companies: string[];
-    topics: string[];
-    timeRange: {
-      valid: boolean;
-      start: number;
-      end: number;
-      description: string;
-    };
-    isTaskQuery: boolean;
-  }> {
-    try {
-      if (!query || typeof query !== 'string') {
-        throw new Error("Invalid query format");
-      }
-
-      const apiUrl = this.settings.apiChoice === 'openai' ? this.settings.openAI.url : this.settings.localLLM.url;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      const isOpenAI = this.settings.apiChoice === 'openai';
-
-      // Use API configuration
-      if (isOpenAI && this.settings.openAI.apiKey) {
-        headers['Authorization'] = `Bearer ${this.settings.openAI.apiKey}`;
-      }
-
-      // Get model name with fallback
-      let modelName = isOpenAI ? this.settings.openAI.model : this.settings.localLLM.model;
-      if (!modelName || modelName.trim() === '') {
-        modelName = isOpenAI ? 'gpt-3.5-turbo' : 'mistral-7b-instruct';
-      }
-
-      // Create extraction prompt
-      const now = new Date();
-      const promptContent = `
-You are an entity extraction assistant. Extract entities from the user's query to help search through notes.
-Current date: ${now.toISOString().split('T')[0]}
-
-Extract the following information from this query: "${query}"
-
-1. People: Names of people mentioned
-2. Companies/Organizations: Names of companies or organizations
-3. Topics: Key topics or subjects that would be relevant for search
-4. Time Range: Does the query specify a time range? If so, provide start and end dates
-5. Task Query: Is the user looking for tasks, todos, or action items?
-
-Return the information as a valid JSON object with this structure:
-{
-  "people": ["name1", "name2", ...],
-  "companies": ["company1", "company2", ...],
-  "topics": ["topic1", "topic2", ...],
-  "timeRange": {
-    "valid": true/false,
-    "start": "YYYY-MM-DD",
-    "end": "YYYY-MM-DD",
-    "description": "human readable description"
-  },
-  "isTaskQuery": true/false
 }
 
-Only include items that are explicitly or strongly implied in the query.
-`;
+// Main class for the AI Chat sidebar view
+export class AIChatView extends ItemView {
+    settings: Settings;
+    messages: ChatMessage[] = [];
+    contextContainer: HTMLElement;
+    messagesContainer: HTMLElement;
+    inputContainer: HTMLElement;
+    inputField: HTMLTextAreaElement;
+    textInput: string = '';
+    controller: AbortController;
+    relevantNotes: NoteWithContent[] = [];
+    app: App;
+    systemMessage: string = '';
 
-      // Format messages based on provider
-      const messages = [
-        { role: 'system', content: 'You are an entity extraction assistant that returns valid JSON only.' },
-        { role: 'user', content: promptContent + "\n\nPlease only respond with valid JSON." }
-      ];
+    constructor(leaf: WorkspaceLeaf, settings: Settings) {
+        super(leaf);
+        this.app = this.leaf.view.app;
+        this.settings = settings;
+        this.controller = new AbortController();
 
-      // Create request
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          model: modelName,
-          messages: messages,
-          temperature: 0.1, // Low temperature for more deterministic results
-          max_tokens: 500
-        }),
-        signal: this.controller.signal
-      });
+        // Setup initial system message
+        this.systemMessage = `You are an AI assistant that helps users understand and explore their notes.
+You have access to their notes and can provide information based on their content.
+Be concise, helpful, and accurate in your responses.
+If you don't know something, say so rather than making up an answer.`;
+    }
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
+    getViewType(): string {
+        return AI_CHAT_VIEW_TYPE;
+    }
 
-      const responseData = await response.json();
-      let extractedText = responseData.choices[0].message.content.trim();
+    getDisplayText(): string {
+        return "AI Chat";
+    }
 
-      // Safely parse the JSON, handling cases where LLM outputs additional text
-      let jsonData = {};
-      try {
-        // First try direct parsing
-        jsonData = JSON.parse(extractedText);
-      } catch (e) {
-        // If that fails, try to extract JSON object using regex
-        const jsonMatch = extractedText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          try {
-            jsonData = JSON.parse(jsonMatch[0]);
-          } catch (e2) {
-            throw new Error("Failed to parse LLM response as JSON");
-          }
-        } else {
-          throw new Error("No valid JSON found in LLM response");
-        }
-      }
+    getIcon(): string {
+        return "message-square";
+    }
 
-      // Validate the parsed data structure
-      if (!jsonData || typeof jsonData !== 'object') {
-        throw new Error("Invalid JSON structure from LLM");
-      }
+    async initializeView() {
+        // Load relevant notes data
+        await this.updateRelevantNotes();
 
-      const entityData = jsonData as any;
+        // Add welcome message
+        this.addAssistantMessage("Hello! I'm your AI assistant. How can I help you with your notes today?");
+    }
 
-      // Convert date strings to timestamps
-      const result = {
-        people: Array.isArray(entityData.people) ? entityData.people : [],
-        companies: Array.isArray(entityData.companies) ? entityData.companies : [],
-        topics: Array.isArray(entityData.topics) ? entityData.topics : [],
-        timeRange: {
-          valid: Boolean(entityData.timeRange?.valid),
-          start: 0,
-          end: 0,
-          description: typeof entityData.timeRange?.description === 'string' ? entityData.timeRange.description : ""
-        },
-        isTaskQuery: Boolean(entityData.isTaskQuery)
-      };
+    async onOpen() {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.addClass('ai-helper-chat-view');
 
-      // Process time range if valid
-      if (result.timeRange.valid) {
-        try {
-          if (entityData.timeRange?.start && entityData.timeRange?.end) {
-            const startDate = new Date(entityData.timeRange.start);
-            const endDate = new Date(entityData.timeRange.end);
+        // Create chat view layout
+        this.createChatLayout(contentEl as HTMLElement);
 
-            // Validate dates are actual dates
-            if (!isNaN(startDate.getTime()) && !isNaN(endDate.getTime())) {
-              result.timeRange.start = startDate.getTime();
-              result.timeRange.end = endDate.getTime();
-            } else {
-              result.timeRange.valid = false;
+        // Initialize the view
+        await this.initializeView();
+    }
+
+    onClose() {
+        this.controller.abort();
+        return super.onClose();
+    }
+
+    createChatLayout(container: HTMLElement) {
+        // Create main content area
+        const mainContent = container.createDiv({ cls: 'ai-helper-chat-main' });
+
+        // Create header
+        const headerSection = mainContent.createDiv({ cls: 'ai-helper-chat-header' });
+        headerSection.createEl('h3', { text: 'AI Assistant' });
+
+        // Create context section for relevant notes
+        const contextSection = mainContent.createDiv({ cls: 'ai-helper-context-section' });
+        const contextHeader = contextSection.createDiv({ cls: 'ai-helper-context-header' });
+        contextHeader.setText('Context Notes');
+        this.contextContainer = contextSection.createDiv({ cls: 'ai-helper-context-notes' });
+
+        // Create messages container
+        this.messagesContainer = mainContent.createDiv({ cls: 'ai-helper-chat-messages' });
+
+        // Create input area
+        this.inputContainer = mainContent.createDiv({ cls: 'ai-helper-chat-input-container' });
+        this.inputField = this.inputContainer.createEl('textarea', {
+            cls: 'ai-helper-chat-input',
+            attr: { placeholder: 'Ask about your notes...' }
+        });
+
+        // Add event listeners
+        this.inputField.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
             }
-          } else {
-            result.timeRange.valid = false;
-          }
+        });
+
+        // Create send button
+        const buttonContainer = this.inputContainer.createDiv({ cls: 'ai-helper-button-container' });
+        const sendButton = new ButtonComponent(buttonContainer)
+            .setButtonText('Send')
+            .setCta()
+            .onClick(() => this.sendMessage());
+    }
+
+    displayContextNotes() {
+        this.contextContainer.empty();
+
+        if (this.relevantNotes.length === 0) {
+            const emptyState = this.contextContainer.createDiv({ cls: 'ai-helper-context-empty' });
+            emptyState.setText('No relevant notes found');
+            return;
+        }
+
+        for (const note of this.relevantNotes) {
+            const noteElement = this.contextContainer.createDiv({ cls: 'ai-helper-context-note' });
+
+            // Add note title
+            const titleEl = noteElement.createDiv({ cls: 'ai-helper-context-note-title' });
+            titleEl.setText(note.file.basename);
+
+            // Add note path
+            const pathEl = noteElement.createDiv({ cls: 'ai-helper-context-note-path' });
+            pathEl.setText(note.file.path);
+
+            // Add relevance score
+            if (note.score !== undefined) {
+                const scoreEl = noteElement.createDiv({ cls: 'ai-helper-context-note-score' });
+                scoreEl.setText(`Relevance Score: ${note.score}`);
+            }
+
+            // Add selection reasons
+            if (note.selectionReasons && Object.keys(note.selectionReasons).length > 0) {
+                const reasonsContainer = noteElement.createDiv({ cls: 'ai-helper-context-note-reasons' });
+                reasonsContainer.createDiv({
+                    cls: 'ai-helper-context-note-reasons-header',
+                    text: 'Selection Factors:'
+                });
+
+                const reasonsList = reasonsContainer.createEl('ul', { cls: 'ai-helper-context-note-reasons-list' });
+
+                for (const [key, value] of Object.entries(note.selectionReasons)) {
+                    const listItem = reasonsList.createEl('li');
+
+                    if (typeof value === 'number') {
+                        listItem.setText(`${key}: ${value}`);
+                    } else {
+                        listItem.setText(`${key}: ${value}`);
+                    }
+                }
+            }
+
+            // Make the note clickable to open it
+            noteElement.addEventListener('click', (event) => {
+                // Don't trigger if clicking on the reasons section
+                if ((event.target as HTMLElement).closest('.ai-helper-context-note-reasons')) {
+                    return;
+                }
+
+                this.app.workspace.getLeaf().openFile(note.file);
+            });
+        }
+    }
+
+    async updateRelevantNotes(query: string = '') {
+        try {
+            if (query) {
+                // Get context based on the query
+                this.relevantNotes = await this.getRelevantContext(query);
+            } else {
+                // Get context based on active note
+                const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (activeView) {
+                    const activeFile = activeView.file;
+                    if (activeFile) {
+                        const fileContent = await this.app.vault.cachedRead(activeFile);
+                        this.relevantNotes = [{
+                            file: activeFile,
+                            content: fileContent,
+                            score: 100,
+                            selectionReasons: { 'Current Active Note': 'This is the file you are currently viewing' }
+                        }];
+                    }
+                }
+            }
+
+            // Update the context display
+            this.displayContextNotes();
         } catch (error) {
-          console.error("Error parsing dates", error);
-          result.timeRange.valid = false;
+            console.error('Error updating relevant notes:', error);
         }
-      }
-
-      return result;
-    } catch (error) {
-      console.error("Error extracting entities", error);
-      // Return empty structure if extraction fails
-      return {
-        people: [],
-        companies: [],
-        topics: [],
-        timeRange: { valid: false, start: 0, end: 0, description: "" },
-        isTaskQuery: false
-      };
-    }
-  }
-
-  async sendToLLM(userQuery: string, context: string): Promise<string> {
-    try {
-      if (!userQuery || typeof userQuery !== 'string') {
-        return "Invalid query format. Please try again with a valid question.";
-      }
-
-      const apiUrl = this.settings.apiChoice === 'openai' ? this.settings.openAI.url : this.settings.localLLM.url;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      const isOpenAI = this.settings.apiChoice === 'openai';
-
-      // Check if we have valid API configuration
-      if (isOpenAI) {
-        if (!this.settings.openAI.apiKey) {
-          throw new Error("OpenAI API key is missing. Please add it in the settings.");
-        }
-        headers['Authorization'] = `Bearer ${this.settings.openAI.apiKey}`;
-      }
-
-      // Get the model name, with a fallback for empty model names
-      let modelName = isOpenAI ? this.settings.openAI.model : this.settings.localLLM.model;
-
-      // Set defaults if the model is empty
-      if (!modelName || modelName.trim() === '') {
-        modelName = isOpenAI ? 'gpt-3.5-turbo' : 'gemma-3-27b-it';
-        console.warn(`No model specified for ${this.settings.apiChoice}, using default: ${modelName}`);
-      }
-
-      // Simple, unified approach for both API types:
-      // 1. Add context as a system message
-      // 2. Keep all existing messages with their proper roles
-
-      // Create a copy of the current messages
-      const existingMessages = [...this.messages];
-
-      // Add context information as a system message
-      const contextMessage = {
-        role: 'system',
-        content: `Context from the user's notes:\n${context}`
-      };
-
-      // Insert context after the first system message
-      const apiMessages = [
-        existingMessages[0],  // Initial system message with instructions
-        contextMessage,       // Context as a system message
-        ...existingMessages.slice(1) // All previous conversation messages
-      ];
-
-      // Create request body
-      const requestBody = {
-        model: modelName,
-        messages: apiMessages,
-        temperature: 0.7,
-        max_tokens: 1500,
-      };
-
-      debugLog(this.settings, "Sending request to API", {
-        url: apiUrl,
-        model: modelName,
-        messageCount: apiMessages.length,
-        isOpenAI: isOpenAI,
-        messages: apiMessages
-      });
-
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: this.controller.signal
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => "Unable to read error response");
-        console.error("API error response:", errorText);
-        throw new Error(`HTTP error! Status: ${response.status}. Details: ${errorText}`);
-      }
-
-      const responseData = await response.json();
-
-      if (!responseData.choices || !responseData.choices[0] || !responseData.choices[0].message) {
-        console.error("Unexpected API response format:", responseData);
-        throw new Error("Invalid response format from the LLM API");
-      }
-
-      return responseData.choices[0].message.content;
-    } catch (error) {
-      console.error('Error sending to LLM:', error);
-      throw error;
-    }
-  }
-
-  onClose() {
-    this.controller.abort();
-    const { contentEl } = this;
-    contentEl.empty();
-  }
-
-  // Update the context sidebar with current notes
-  updateContextSidebar() {
-    this.contextNotesContainer.empty();
-
-    if (this.currentContextNotes.length === 0) {
-      this.contextNotesContainer.createEl('div', {
-        text: 'No notes in context yet. Ask a question to see relevant notes.',
-        cls: 'ai-helper-context-empty'
-      });
-      return;
     }
 
-    for (const {note, score, mentions, selectionReasons} of this.currentContextNotes) {
-      const noteEl = this.contextNotesContainer.createEl('div', {
-        cls: 'ai-helper-context-note'
-      });
+    // The rest of your methods remain mostly the same
+    // Just update any references to DOM elements and adjust for the sidebar view
 
-      // Note title (using basename or path)
-      noteEl.createEl('div', {
-        text: note.file.basename,
-        cls: 'ai-helper-context-note-title',
-        attr: {
-          title: note.file.basename
-        }
-      });
+    addUserMessage(message: string) {
+        // Create message element
+        const messageEl = this.messagesContainer.createDiv({ cls: 'ai-helper-chat-message ai-helper-chat-message-user' });
+        messageEl.setText(message);
 
-      // Path
-      noteEl.createEl('div', {
-        text: note.path,
-        cls: 'ai-helper-context-note-path',
-        attr: {
-          title: note.path
-        }
-      });
+        // Add to messages array
+        this.messages.push({ role: 'user', content: message });
 
-      // Score
-      noteEl.createEl('div', {
-        text: `Relevance Score: ${score}`,
-        cls: 'ai-helper-context-note-score'
-      });
-
-      // Detailed selection reasons
-      if (selectionReasons && selectionReasons.length > 0) {
-        const reasonsContainer = noteEl.createEl('div', {
-          cls: 'ai-helper-context-note-reasons'
+        // Scroll to bottom
+        this.messagesContainer.scrollTo({
+            top: this.messagesContainer.scrollHeight,
+            behavior: 'smooth'
         });
-
-        reasonsContainer.createEl('div', {
-          text: 'Selection reasons:',
-          cls: 'ai-helper-context-note-reasons-header'
-        });
-
-        const reasonsList = reasonsContainer.createEl('ul', {
-          cls: 'ai-helper-context-note-reasons-list'
-        });
-
-        selectionReasons.forEach(reason => {
-          reasonsList.createEl('li', {
-            text: reason
-          });
-        });
-
-        // Prevent click on reasons from opening the note
-        reasonsContainer.addEventListener('click', (event) => {
-          event.stopPropagation();
-        });
-      }
-
-      // Click event to open the note
-      noteEl.addEventListener('click', () => {
-        const file = note.file;
-        this.app.workspace.openLinkText(file.path, '', true);
-      });
     }
-  }
+
+    addAssistantMessage(message: string) {
+        // Create message element
+        const messageEl = this.messagesContainer.createDiv({ cls: 'ai-helper-chat-message ai-helper-chat-message-assistant' });
+
+        // Add loading class initially
+        messageEl.addClass('ai-helper-chat-loading');
+
+        // Create placeholder text
+        messageEl.setText('...');
+
+        // Render markdown content
+        const contentDiv = messageEl.createDiv();
+        MarkdownRenderer.renderMarkdown(message, contentDiv, '', this);
+
+        // Fix paragraph spacing
+        contentDiv.querySelectorAll('p').forEach(p => {
+            p.style.margin = '0';
+            p.style.padding = '0';
+        });
+
+        // Remove loading class and placeholder
+        messageEl.setText('');
+        messageEl.removeClass('ai-helper-chat-loading');
+        messageEl.appendChild(contentDiv);
+
+        // Add to messages array
+        this.messages.push({ role: 'assistant', content: message });
+
+        // Scroll to bottom
+        this.messagesContainer.scrollTo({
+            top: this.messagesContainer.scrollHeight,
+            behavior: 'smooth'
+        });
+
+        // Focus the input field again
+        this.inputField.focus();
+    }
+
+    async sendMessage() {
+        const message = this.inputField.value.trim();
+        if (!message) return;
+
+        // Clear input
+        this.inputField.value = '';
+
+        // Add user message to chat
+        this.addUserMessage(message);
+
+        // Get context based on the query
+        await this.updateRelevantNotes(message);
+
+        try {
+            // Initialize messages array with system message if not already done
+            if (this.messages.length === 0 || this.messages[0].role !== 'system') {
+                this.messages.unshift({ role: 'system', content: this.systemMessage });
+            }
+
+            // Send message to LLM
+            const response = await this.sendToLLM(message);
+
+            // Add assistant response to chat
+            this.addAssistantMessage(response.content);
+
+        } catch (error) {
+            console.error('Error sending message:', error);
+            this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+        }
+    }
+
+    async getRelevantContext(query: string): Promise<NoteWithContent[]> {
+        if (!query || query.trim().length === 0) {
+            return [];
+        }
+
+        // Log for debugging
+        console.log('Getting relevant context for query:', query);
+
+        // Get data for entities in the query
+        const entities = await this.extractEntitiesFromQuery(query);
+        const files = this.app.vault.getMarkdownFiles();
+        const result: NoteWithContent[] = [];
+
+        // Log for debugging
+        console.log('Extracted entities:', entities);
+
+        // Get vault statistics - this can be used to enhance entity identification
+        const vaultStats = await this.getVaultStatistics();
+
+        // Score each file based on entity matches
+        for (const file of files) {
+            const content = await this.app.vault.cachedRead(file);
+            let score = 0;
+            const selectionReasons: { [key: string]: number | string } = {};
+
+            // Check file name similarity
+            const fileNameScore = this.calculateFileNameScore(file.basename, query);
+            if (fileNameScore > 0) {
+                score += fileNameScore * 5; // Name matches are important
+                selectionReasons['Filename Match'] = fileNameScore;
+            }
+
+            // Check for content matches based on entities and terms
+            if (entities.length > 0) {
+                for (const entity of entities) {
+                    // Handle different entity types
+                    if (entity.type === 'note' && content.toLowerCase().includes(entity.value.toLowerCase())) {
+                        const count = this.countOccurrences(content.toLowerCase(), entity.value.toLowerCase());
+                        const termScore = Math.min(count * 3, 15); // Cap term score at 15
+                        score += termScore;
+                        selectionReasons[entity.value] = count;
+                    }
+                    else if (entity.type === 'tag' && content.includes(`#${entity.value}`)) {
+                        score += 10; // Tags are explicit indicators of relevance
+                        selectionReasons[`#${entity.value}`] = 'Tag Match';
+                    }
+                    else if (entity.type === 'heading' && content.includes(`# ${entity.value}`)) {
+                        score += 8; // Headings indicate structure and topics
+                        selectionReasons[`Heading: ${entity.value}`] = 'Heading Match';
+                    }
+                }
+            }
+
+            // Generic term matching for query terms that might not be identified as entities
+            const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 3);
+            for (const term of queryTerms) {
+                if (content.toLowerCase().includes(term)) {
+                    const count = this.countOccurrences(content.toLowerCase(), term);
+                    const termScore = Math.min(count, 5);
+                    score += termScore;
+
+                    // Only add as a reason if it's significant
+                    if (count > 1) {
+                        selectionReasons[term] = count;
+                    }
+                }
+            }
+
+            // Check recency (if available)
+            const frontmatter = extractFrontmatter(content);
+            if (frontmatter && frontmatter.created) {
+                try {
+                    const created = new Date(frontmatter.created);
+                    const now = new Date();
+                    const daysSinceCreation = Math.floor((now.getTime() - created.getTime()) / (1000 * 60 * 60 * 24));
+
+                    // Boost newer notes
+                    if (daysSinceCreation < 30) {
+                        const recencyScore = Math.max(5 - Math.floor(daysSinceCreation / 7), 0);
+                        score += recencyScore;
+                        if (recencyScore > 0) {
+                            selectionReasons['Recent Note'] = `Created ${daysSinceCreation} days ago`;
+                        }
+                    }
+                } catch (e) {
+                    // Ignore date parsing errors
+                }
+            }
+
+            // Add file to results if it has a score
+            if (score > 0) {
+                result.push({
+                    file,
+                    content,
+                    score,
+                    selectionReasons
+                });
+            }
+        }
+
+        // Sort by score descending
+        result.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+        // Return top results
+        return result.slice(0, 5);
+    }
+
+    calculateFileNameScore(fileName: string, query: string): number {
+        const lowerFileName = fileName.toLowerCase();
+        const lowerQuery = query.toLowerCase();
+
+        // Exact match
+        if (lowerFileName === lowerQuery) {
+            return 20;
+        }
+
+        // Contains full query
+        if (lowerFileName.includes(lowerQuery)) {
+            return 15;
+        }
+
+        // Check for individual terms
+        const queryTerms = lowerQuery.split(/\s+/).filter(term => term.length > 2);
+        let matchedTerms = 0;
+
+        for (const term of queryTerms) {
+            if (lowerFileName.includes(term)) {
+                matchedTerms++;
+            }
+        }
+
+        if (matchedTerms > 0 && queryTerms.length > 0) {
+            return (matchedTerms / queryTerms.length) * 10;
+        }
+
+        return 0;
+    }
+
+    countOccurrences(text: string, term: string): number {
+        let count = 0;
+        let position = text.indexOf(term);
+
+        while (position !== -1) {
+            count++;
+            position = text.indexOf(term, position + 1);
+        }
+
+        return count;
+    }
+
+    async getVaultStatistics() {
+        const files = this.app.vault.getMarkdownFiles();
+        const stats = {
+            totalFiles: files.length,
+            commonTags: new Map<string, number>(),
+            commonTerms: new Map<string, number>()
+        };
+
+        // This could be expanded to collect more detailed statistics
+        // For now, we'll keep it simple
+
+        return stats;
+    }
+
+    async extractEntitiesFromQuery(query: string): Promise<Entity[]> {
+        const entities: Entity[] = [];
+
+        // Basic entity extraction based on pattern matching
+        // In a more sophisticated version, this could use NLP or the LLM itself
+
+        // Extract potential note references (quoted strings or explicit mentions)
+        const noteMatches = query.match(/"([^"]+)"/g) || [];
+        for (const match of noteMatches) {
+            const value = match.replace(/"/g, '');
+            entities.push({ type: 'note', value });
+        }
+
+        // Extract tag references (hashtags)
+        const tagMatches = query.match(/#(\w+)/g) || [];
+        for (const match of tagMatches) {
+            const value = match.substring(1); // Remove the # symbol
+            entities.push({ type: 'tag', value });
+        }
+
+        // Extract task references
+        if (query.toLowerCase().includes('task') || query.toLowerCase().includes('todo')) {
+            entities.push({ type: 'task', value: 'task' });
+        }
+
+        // If no entities found, extract key terms
+        if (entities.length === 0) {
+            const terms = query.toLowerCase()
+                .split(/\s+/)
+                .filter(term => term.length > 3 && !['what', 'when', 'where', 'which', 'find', 'tell', 'about', 'with', 'that', 'have', 'this'].includes(term));
+
+            for (const term of terms) {
+                entities.push({ type: 'note', value: term });
+            }
+        }
+
+        return entities;
+    }
+
+    sanitizeRegexPattern(pattern: string): string {
+        // Limit pattern length to avoid potential excessive backtracking or resource issues
+        pattern = pattern.slice(0, 100);
+
+        // Escape regex special characters to prevent invalid regex or ReDoS
+        const specialChars = /[.*+?^${}()|[\]\\]/g;
+        return pattern.replace(specialChars, '\\$&');
+    }
+
+    async sendToLLM(query: string): Promise<ChatMessage> {
+        // Determine which API endpoint to use
+        let apiEndpoint = 'https://api.openai.com/v1/chat/completions';
+        let apiKey = '';
+        let modelName = 'gpt-3.5-turbo';
+
+        // Check if local LLM is enabled
+        const isLocalLLMEnabled = this.settings.localLLMSettings?.enabled && this.settings.localLLMSettings?.apiUrl;
+
+        if (isLocalLLMEnabled) {
+            // Use Local LLM settings
+            apiEndpoint = this.settings.localLLMSettings.apiUrl;
+            apiKey = this.settings.localLLMSettings.apiKey || '';
+            modelName = this.settings.localLLMSettings.modelName || 'mistral-7b-instruct';
+        } else {
+            // Use OpenAI settings
+            apiEndpoint = this.settings.openAISettings?.apiUrl || 'https://api.openai.com/v1/chat/completions';
+            apiKey = this.settings.openAISettings?.apiKey || '';
+            modelName = this.settings.openAISettings?.modelName || 'gpt-3.5-turbo';
+
+            // Only check for OpenAI API key if OpenAI is being used
+            if (!apiKey) {
+                throw new Error('OpenAI API key is missing. Please configure it in the settings.');
+            }
+        }
+
+        // Prepare context from notes
+        let contextText = "";
+        if (this.relevantNotes.length > 0) {
+            contextText = "Here are some relevant notes that might help with the query:\n\n";
+
+            for (const note of this.relevantNotes) {
+                contextText += `File: ${note.file.basename}\n`;
+                contextText += `Content: ${note.content.substring(0, 2000)}\n\n`;
+            }
+        }
+
+        // Create a system message with context
+        const contextMessage = {
+            role: 'user' as const,
+            content: `Here is context from the user's notes:\n${contextText}`
+        };
+
+        // Prepare API request
+        const apiMessages = [
+            { role: 'system' as const, content: this.systemMessage },
+            contextMessage,
+            ...this.messages.filter(msg => msg.role !== 'system')
+        ];
+
+        // Prepare request parameters
+        const requestParams: RequestUrlParam = {
+            url: apiEndpoint,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model: modelName,
+                messages: apiMessages,
+                temperature: 0.7,
+                max_tokens: 2000
+            })
+        };
+
+        try {
+            // Send request to API
+            const response = await requestUrl(requestParams);
+
+            // Parse response
+            const responseData = response.json;
+
+            if (responseData.choices && responseData.choices.length > 0) {
+                const messageContent = responseData.choices[0].message.content;
+                return { role: 'assistant', content: messageContent };
+            } else {
+                throw new Error('Invalid response format from API');
+            }
+        } catch (error) {
+            console.error('Error in API request:', error);
+            throw error;
+        }
+    }
 }

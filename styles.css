@@ -40,6 +40,7 @@ If your plugin does not need CSS, delete this file.
   margin-bottom: 12px;
   background-color: var(--background-secondary);
   max-height: 30%;
+  min-height: 100px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -55,7 +56,9 @@ If your plugin does not need CSS, delete this file.
 .ai-helper-context-notes {
   padding: 8px;
   overflow-y: auto;
-  max-height: 200px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .ai-helper-context-note {
@@ -211,10 +214,40 @@ If your plugin does not need CSS, delete this file.
 
 /* Empty state styling */
 .ai-helper-context-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
-  font-style: italic;
-  padding: 8px;
+  padding: 20px;
   text-align: center;
+  height: 100%;
+  min-height: 60px;
+  background-color: var(--background-primary);
+  border-radius: 4px;
+  margin: 4px;
+  gap: 12px;
+}
+
+.ai-helper-context-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.ai-helper-context-empty-message {
+  font-size: 1.1em;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.ai-helper-context-empty-suggestion {
+  font-size: 0.9em;
+  opacity: 0.8;
+  font-style: italic;
 }
 
 /* Button container styling */
@@ -241,4 +274,22 @@ If your plugin does not need CSS, delete this file.
   justify-content: flex-end;
   gap: 10px;
   margin-top: 10px;
+}
+
+.ai-helper-context-note-metadata {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 4px 0;
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+.ai-helper-context-note-path {
+    opacity: 0.8;
+}
+
+.ai-helper-context-note-updated {
+    opacity: 0.7;
+    font-style: italic;
 }

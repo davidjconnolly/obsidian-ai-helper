@@ -116,6 +116,9 @@ export class AIChatView extends ItemView {
             this.isInitialized = true;
         }
 
+        // Initialize empty context notes display
+        this.displayContextNotes();
+
         // Add welcome message
         this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
     }
@@ -174,7 +177,19 @@ export class AIChatView extends ItemView {
 
         if (this.relevantNotes.length === 0) {
             const emptyState = this.contextContainer.createDiv({ cls: 'ai-helper-context-empty' });
-            emptyState.setText('No relevant notes found');
+
+            // Add search icon
+            const iconContainer = emptyState.createDiv({ cls: 'ai-helper-context-empty-icon' });
+            iconContainer.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-search"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>`;
+
+            // Add message
+            const messageContainer = emptyState.createDiv({ cls: 'ai-helper-context-empty-message' });
+            messageContainer.setText('Ask a question to search your notes');
+
+            // Add suggestion
+            const suggestionContainer = emptyState.createDiv({ cls: 'ai-helper-context-empty-suggestion' });
+            suggestionContainer.setText('Relevant notes will appear here as context for our conversation');
+
             return;
         }
 
@@ -188,9 +203,18 @@ export class AIChatView extends ItemView {
             const titleEl = noteElement.createDiv({ cls: 'ai-helper-context-note-title' });
             titleEl.setText(note.file.basename);
 
+            // Add metadata section (path and last updated)
+            const metadataEl = noteElement.createDiv({ cls: 'ai-helper-context-note-metadata' });
+
             // Add note path
-            const pathEl = noteElement.createDiv({ cls: 'ai-helper-context-note-path' });
+            const pathEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-path' });
             pathEl.setText(note.file.path);
+
+            // Add last updated time
+            const lastUpdatedEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-updated' });
+            const lastUpdated = new Date(note.file.stat.mtime);
+            const timeAgo = this.getTimeAgoString(lastUpdated);
+            lastUpdatedEl.setText(`Last updated: ${timeAgo}`);
 
             // Add note content preview
             const contentEl = noteElement.createDiv({ cls: 'ai-helper-context-note-content' });
@@ -201,6 +225,44 @@ export class AIChatView extends ItemView {
                 this.app.workspace.getLeaf().openFile(note.file);
             });
         }
+    }
+
+    // Helper function to format time ago
+    private getTimeAgoString(date: Date): string {
+        const now = new Date();
+        const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+        if (diffInSeconds < 60) {
+            return 'just now';
+        }
+
+        const diffInMinutes = Math.floor(diffInSeconds / 60);
+        if (diffInMinutes < 60) {
+            return `${diffInMinutes}m ago`;
+        }
+
+        const diffInHours = Math.floor(diffInMinutes / 60);
+        if (diffInHours < 24) {
+            return `${diffInHours}h ago`;
+        }
+
+        const diffInDays = Math.floor(diffInHours / 24);
+        if (diffInDays < 7) {
+            return `${diffInDays}d ago`;
+        }
+
+        if (diffInDays < 30) {
+            const weeks = Math.floor(diffInDays / 7);
+            return `${weeks}w ago`;
+        }
+
+        if (diffInDays < 365) {
+            const months = Math.floor(diffInDays / 30);
+            return `${months}mo ago`;
+        }
+
+        const years = Math.floor(diffInDays / 365);
+        return `${years}y ago`;
     }
 
     addUserMessage(message: string) {
@@ -290,13 +352,24 @@ export class AIChatView extends ItemView {
                 .map(term => term.replace(/[^\w\s]/g, ''));
             console.log('Search terms:', searchTerms);
 
+            // Get the active file if any
+            const activeFile = this.app.workspace.getActiveFile();
+            const file = activeFile ? activeFile : undefined;
+
             // Find semantically similar content
             const results = await this.vectorStore.search(queryEmbedding, {
                 similarity: 0.5,
                 limit: this.settings.chatSettings.maxNotesToSearch || 5,
-                searchTerms
+                searchTerms,
+                file // Pass the active file for recency context
             });
-            console.log('Vector search results:', results);
+
+            console.log('Vector search results:', results.map(r => ({
+                path: r.path,
+                score: r.score,
+                recencyScore: r.recencyScore,
+                titleScore: r.titleScore
+            })));
 
             // Process results
             const relevantNotes: NoteWithContent[] = [];
@@ -317,9 +390,15 @@ export class AIChatView extends ItemView {
 
                 try {
                     const content = await this.app.vault.cachedRead(file);
+                    const mtime = file.stat.mtime;
+                    const lastModified = new Date(mtime).toLocaleString();
+
                     console.log('Found relevant note:', {
                         path: file.path,
                         score: result.score,
+                        recencyScore: result.recencyScore,
+                        titleScore: result.titleScore,
+                        lastModified,
                         chunkIndex: result.chunkIndex,
                         contentLength: content.length
                     });
@@ -756,17 +835,47 @@ class VectorStore {
         this.dimensions = dimensions;
     }
 
-    async search(queryEmbedding: Float32Array, options: { similarity: number; limit: number; searchTerms?: string[] }): Promise<{ path: string; score: number; chunkIndex?: number; titleScore?: number }[]> {
+    // Helper method to calculate recency score
+    private calculateRecencyScore(mtime: number): number {
+        const now = Date.now();
+        const daysSinceModified = (now - mtime) / (1000 * 60 * 60 * 24);
+
+        // Exponential decay function that gives:
+        // - 0.3 (max recency boost) for files modified today
+        // - 0.15 for files modified a week ago
+        // - 0.075 for files modified a month ago
+        // - Approaching 0 for older files
+        return 0.3 * Math.exp(-daysSinceModified / 30);
+    }
+
+    async search(queryEmbedding: Float32Array, options: {
+        similarity: number;
+        limit: number;
+        searchTerms?: string[];
+        file?: TFile;
+    }): Promise<{
+        path: string;
+        score: number;
+        chunkIndex?: number;
+        titleScore?: number;
+        recencyScore?: number;
+    }[]> {
         if (this.embeddings.size === 0) {
             console.warn('No embeddings found in vector store');
             return [];
         }
 
-        const results: { path: string; score: number; chunkIndex?: number; titleScore?: number }[] = [];
-        const similarityThreshold = options.similarity || 0.5; // Lower base threshold
-        const limit = options.limit || 5;
+        const results: {
+            path: string;
+            score: number;
+            chunkIndex?: number;
+            titleScore?: number;
+            recencyScore?: number;
+            baseScore: number;
+        }[] = [];
 
-        // Extract search terms for title matching
+        const similarityThreshold = options.similarity || 0.5;
+        const limit = options.limit || 5;
         const searchTerms = options.searchTerms || [];
 
         for (const [path, noteEmbedding] of this.embeddings.entries()) {
@@ -777,10 +886,17 @@ class VectorStore {
             const filename = path.split('/').pop()?.toLowerCase() || '';
             const titleScore = searchTerms.reduce((score, term) => {
                 if (filename.includes(term.toLowerCase())) {
-                    score += 0.3; // Boost score for title matches
+                    score += 0.3;
                 }
                 return score;
             }, 0);
+
+            // Calculate recency score if we have access to the file
+            const file = options.file?.vault.getAbstractFileByPath(path);
+            const recencyScore = file instanceof TFile ? this.calculateRecencyScore(file.stat.mtime) : 0;
+
+            // Track the best matching chunks for this note
+            const noteChunks: { similarity: number; index: number; isHeader: boolean }[] = [];
 
             for (let i = 0; i < noteEmbedding.chunks.length; i++) {
                 const chunk = noteEmbedding.chunks[i];
@@ -788,32 +904,47 @@ class VectorStore {
 
                 const similarity = this.calculateCosineSimilarity(queryEmbedding, chunk.embedding);
 
-                // Boost score for first chunk (usually contains title and headers)
-                const positionBoost = i === 0 ? 0.1 : 0;
-                const adjustedSimilarity = similarity + positionBoost;
+                // Check if this chunk starts with a header
+                const isHeader = /^#{1,6}\s/.test(chunk.content.trim());
 
-                if (adjustedSimilarity > maxSimilarity) {
-                    maxSimilarity = adjustedSimilarity;
+                noteChunks.push({ similarity, index: i, isHeader });
+
+                if (similarity > maxSimilarity) {
+                    maxSimilarity = similarity;
                     bestChunkIndex = i;
                 }
+            }
 
-                if (adjustedSimilarity + titleScore >= similarityThreshold) {
+            // Sort chunks by similarity
+            noteChunks.sort((a, b) => b.similarity - a.similarity);
+
+            // Take the top 2 chunks if they exist
+            for (let i = 0; i < Math.min(2, noteChunks.length); i++) {
+                const chunk = noteChunks[i];
+                const baseScore = chunk.similarity;
+                const combinedScore = baseScore + titleScore + recencyScore;
+
+                if (combinedScore >= similarityThreshold) {
                     results.push({
                         path,
-                        score: adjustedSimilarity + titleScore,
-                        chunkIndex: i,
-                        titleScore
+                        score: combinedScore,
+                        baseScore,
+                        chunkIndex: chunk.index,
+                        titleScore,
+                        recencyScore
                     });
                 }
             }
 
-            // Always include best chunk if it has a title match
-            if (titleScore > 0 && maxSimilarity > 0 && !results.some(r => r.path === path)) {
+            // Always include best chunk if it has a title match or is recent
+            if ((titleScore > 0 || recencyScore > 0.15) && maxSimilarity > 0 && !results.some(r => r.path === path)) {
                 results.push({
                     path,
-                    score: maxSimilarity + titleScore,
+                    score: maxSimilarity + titleScore + recencyScore,
+                    baseScore: maxSimilarity,
                     chunkIndex: bestChunkIndex,
-                    titleScore
+                    titleScore,
+                    recencyScore
                 });
             }
         }
@@ -821,9 +952,16 @@ class VectorStore {
         // Sort by combined score and limit results
         const sortedResults = results
             .sort((a, b) => b.score - a.score)
-            .slice(0, limit);
+            .slice(0, limit)
+            .map(({ baseScore, ...rest }) => rest); // Remove baseScore from final results
 
-        console.log(`Search found ${results.length} initial matches, returning top ${sortedResults.length}`);
+        console.log('Search results with scores:', sortedResults.map(r => ({
+            path: r.path,
+            total: r.score.toFixed(3),
+            title: r.titleScore?.toFixed(3) || '0',
+            recency: r.recencyScore?.toFixed(3) || '0'
+        })));
+
         return sortedResults;
     }
 

@@ -14,6 +14,17 @@ export interface LocalLLMSettings {
   enabled: boolean;
 }
 
+export interface EmbeddingSettings {
+  provider: 'openai' | 'local' | 'none';
+  openaiModel: string;
+  openaiApiUrl?: string;
+  localApiUrl?: string;
+  localModel?: string;
+  chunkSize: number;
+  chunkOverlap: number;
+  dimensions: number;
+}
+
 export interface ChatSettings {
   maxNotesToSearch: number;
   contextWindowSize: number;
@@ -25,6 +36,7 @@ export interface ChatSettings {
 export interface Settings {
   openAISettings: OpenAISettings;
   localLLMSettings: LocalLLMSettings;
+  embeddingSettings: EmbeddingSettings;
   chatSettings: ChatSettings;
   openChatOnStartup: boolean;
   debugMode: boolean;
@@ -43,6 +55,16 @@ export const DEFAULT_SETTINGS: Settings = {
     apiKey: '',
     modelName: 'mistral-7b-instruct',
     enabled: false
+  },
+  embeddingSettings: {
+    provider: 'none',
+    openaiModel: 'text-embedding-3-small',
+    openaiApiUrl: 'https://api.openai.com/v1/embeddings',
+    localApiUrl: 'http://localhost:1234/v1/embeddings',
+    localModel: 'all-MiniLM-L6-v2',
+    chunkSize: 1000,
+    chunkOverlap: 200,
+    dimensions: 384
   },
   chatSettings: {
     maxNotesToSearch: 20,
@@ -90,7 +112,7 @@ export class SettingsTab extends PluginSettingTab {
       );
 
     // OpenAI Settings
-    containerEl.createEl('h3', { text: 'OpenAI Settings' });
+    containerEl.createEl('h3', { text: 'OpenAI' });
 
     new Setting(containerEl)
       .setName('OpenAI API Key')
@@ -119,7 +141,7 @@ export class SettingsTab extends PluginSettingTab {
       );
 
     // Local LLM Settings
-    containerEl.createEl('h3', { text: 'Local LLM Settings' });
+    containerEl.createEl('h3', { text: 'Local LLM' });
 
     new Setting(containerEl)
       .setName('LM Studio API URL')
@@ -147,8 +169,130 @@ export class SettingsTab extends PluginSettingTab {
           })
       );
 
+    // Embedding Settings
+    containerEl.createEl('h3', { text: 'Embedding' });
+
+    new Setting(containerEl)
+      .setName('Embedding Provider')
+      .setDesc('Choose which embedding provider to use')
+      .addDropdown(dropdown => {
+        dropdown
+          .addOption('none', 'None (Mock Embeddings)')
+          .addOption('openai', 'OpenAI')
+          .addOption('local', 'Local')
+          .setValue(this.plugin.settings.embeddingSettings.provider)
+          .onChange(async (value) => {
+            this.plugin.settings.embeddingSettings.provider = value as 'none' | 'openai' | 'local';
+            await this.plugin.saveSettings();
+            this.display(); // Refresh the settings UI
+          });
+      });
+
+    // OpenAI embedding settings
+    if (this.plugin.settings.embeddingSettings.provider === 'openai') {
+      new Setting(containerEl)
+        .setName('OpenAI Embedding Model')
+        .setDesc('The model to use for OpenAI embeddings')
+        .addText(text => {
+          text
+            .setPlaceholder('text-embedding-3-small')
+            .setValue(this.plugin.settings.embeddingSettings.openaiModel)
+            .onChange(async (value) => {
+              this.plugin.settings.embeddingSettings.openaiModel = value;
+              await this.plugin.saveSettings();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName('OpenAI Embedding API URL')
+        .setDesc('The URL for the OpenAI embeddings API')
+        .addText(text => {
+          text
+            .setPlaceholder('https://api.openai.com/v1/embeddings')
+            .setValue(this.plugin.settings.embeddingSettings.openaiApiUrl || '')
+            .onChange(async (value) => {
+              this.plugin.settings.embeddingSettings.openaiApiUrl = value;
+              await this.plugin.saveSettings();
+            });
+        });
+    }
+
+    // Local embedding settings
+    if (this.plugin.settings.embeddingSettings.provider === 'local') {
+      new Setting(containerEl)
+        .setName('Local embedding API URL')
+        .setDesc('The URL for the local embeddings API')
+        .addText(text => {
+          text
+            .setPlaceholder('http://localhost:1234/v1/embeddings')
+            .setValue(this.plugin.settings.embeddingSettings.localApiUrl || '')
+            .onChange(async (value) => {
+              this.plugin.settings.embeddingSettings.localApiUrl = value;
+              await this.plugin.saveSettings();
+            });
+        });
+
+      new Setting(containerEl)
+        .setName('Local embedding model')
+        .setDesc('The model to use for local embeddings')
+        .addText(text => {
+          text
+            .setPlaceholder('all-MiniLM-L6-v2')
+            .setValue(this.plugin.settings.embeddingSettings.localModel || '')
+            .onChange(async (value) => {
+              this.plugin.settings.embeddingSettings.localModel = value;
+              await this.plugin.saveSettings();
+            });
+        });
+    }
+
+    // Common embedding settings
+    new Setting(containerEl)
+      .setName('Embedding dimensions')
+      .setDesc('The number of dimensions for embeddings (384 for MiniLM, 1536 for OpenAI text-embedding-3-small, 3072 for OpenAI text-embedding-3-large)')
+      .addText(text => {
+        text
+          .setPlaceholder('384')
+          .setValue(this.plugin.settings.embeddingSettings.dimensions.toString())
+          .onChange(async (value) => {
+            const dimensions = parseInt(value);
+            if (!isNaN(dimensions) && dimensions > 0) {
+              this.plugin.settings.embeddingSettings.dimensions = dimensions;
+              await this.plugin.saveSettings();
+            }
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Chunk size')
+      .setDesc('The maximum size of text chunks for embedding')
+      .addSlider(slider => {
+        slider
+          .setLimits(100, 2000, 100)
+          .setValue(this.plugin.settings.embeddingSettings.chunkSize)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.embeddingSettings.chunkSize = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName('Chunk overlap')
+      .setDesc('The number of characters to overlap between chunks')
+      .addSlider(slider => {
+        slider
+          .setLimits(0, 500, 50)
+          .setValue(this.plugin.settings.embeddingSettings.chunkOverlap)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.embeddingSettings.chunkOverlap = value;
+            await this.plugin.saveSettings();
+          });
+      });
+
     // General Settings
-    containerEl.createEl('h3', { text: 'General Settings' });
+    containerEl.createEl('h3', { text: 'General' });
 
     new Setting(containerEl)
       .setName('Open chat on startup')

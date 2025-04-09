@@ -565,16 +565,7 @@ class EmbeddingStore {
             // Initialize the embedding model based on settings
             const provider = this.settings.embeddingSettings.provider;
 
-            if (provider === 'none') {
-                // Use mock embeddings
-                this.embeddingModel = {
-                    embed: async (text: string) => {
-                        // Mock embedding generation with configurable dimensions
-                        return new Float32Array(this.dimensions).fill(0).map(() => Math.random());
-                    }
-                };
-                logDebug(`Using mock embeddings with ${this.dimensions} dimensions`);
-            } else if (provider === 'openai') {
+            if (provider === 'openai') {
                 // Use OpenAI embeddings
                 this.embeddingModel = {
                     embed: async (text: string) => {
@@ -590,6 +581,8 @@ class EmbeddingStore {
                     }
                 };
                 logDebug('Using local embeddings');
+            } else {
+                throw new Error('Invalid embedding provider. Must be either "openai" or "local".');
             }
             logDebug('EmbeddingStore initialized successfully');
         } catch (error) {
@@ -645,8 +638,7 @@ class EmbeddingStore {
             }
         } catch (error) {
             logError('Error generating OpenAI embedding', error);
-            // Fallback to mock embeddings with configured dimensions
-            return new Float32Array(this.dimensions).fill(0).map(() => Math.random());
+            throw error;
         }
     }
 
@@ -700,8 +692,7 @@ class EmbeddingStore {
             }
         } catch (error) {
             logError('Error generating local embedding', error);
-            // Fallback to mock embeddings with configured dimensions
-            return new Float32Array(this.dimensions).fill(0).map(() => Math.random());
+            throw error;
         }
     }
 

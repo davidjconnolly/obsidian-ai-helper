@@ -15,7 +15,7 @@ export interface LocalLLMSettings {
 }
 
 export interface EmbeddingSettings {
-  provider: 'openai' | 'local' | 'none';
+  provider: 'openai' | 'local';
   openaiModel: string;
   openaiApiUrl?: string;
   localApiUrl?: string;
@@ -33,6 +33,16 @@ export interface ChatSettings {
   includeTaskItems: boolean;
 }
 
+export interface SummarizeSettings {
+  provider: 'openai' | 'local';
+  openaiModel: string;
+  openaiApiUrl?: string;
+  localApiUrl?: string;
+  localModel?: string;
+  maxTokens: number;
+  temperature: number;
+}
+
 export interface Settings {
   openAISettings: OpenAISettings;
   localLLMSettings: LocalLLMSettings;
@@ -42,6 +52,7 @@ export interface Settings {
   debugMode: boolean;
   apiChoice: 'local' | 'openai';
   fileUpdateFrequency: number; // Time in seconds before reindexing modified files
+  summarizeSettings: SummarizeSettings;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -58,7 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
     enabled: false
   },
   embeddingSettings: {
-    provider: 'none',
+    provider: 'openai',
     openaiModel: 'text-embedding-3-small',
     openaiApiUrl: 'https://api.openai.com/v1/embeddings',
     localApiUrl: 'http://localhost:1234/v1/embeddings',
@@ -76,7 +87,16 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   openChatOnStartup: false,
   debugMode: true,
-  fileUpdateFrequency: 30 // Default to 30 seconds
+  fileUpdateFrequency: 30, // Default to 30 seconds
+  summarizeSettings: {
+    provider: 'openai',
+    openaiModel: 'gpt-3.5-turbo',
+    openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
+    localApiUrl: 'http://localhost:1234/v1/chat/completions',
+    localModel: 'mistral-7b-instruct',
+    maxTokens: 500,
+    temperature: 0.7
+  },
 };
 
 export class SettingsTab extends PluginSettingTab {
@@ -171,12 +191,11 @@ export class SettingsTab extends PluginSettingTab {
       .setDesc('Choose which embedding provider to use')
       .addDropdown(dropdown => {
         dropdown
-          .addOption('none', 'None (Mock Embeddings)')
           .addOption('openai', 'OpenAI')
           .addOption('local', 'Local')
           .setValue(this.plugin.settings.embeddingSettings.provider)
           .onChange(async (value) => {
-            this.plugin.settings.embeddingSettings.provider = value as 'none' | 'openai' | 'local';
+            this.plugin.settings.embeddingSettings.provider = value as 'openai' | 'local';
             await this.plugin.saveSettings();
             this.display(); // Refresh the settings UI
           });
@@ -338,5 +357,96 @@ export class SettingsTab extends PluginSettingTab {
             this.display();
           });
       });
+
+    // Summarize Settings
+    containerEl.createEl('h3', { text: 'Summarize' });
+
+    new Setting(containerEl)
+      .setName('Summarize Provider')
+      .setDesc('Choose which provider to use for summarization')
+      .addDropdown(dropdown => {
+        dropdown
+          .addOption('openai', 'OpenAI')
+          .addOption('local', 'Local')
+          .setValue(this.plugin.settings.summarizeSettings.provider)
+          .onChange(async (value) => {
+            this.plugin.settings.summarizeSettings.provider = value as 'openai' | 'local';
+            await this.plugin.saveSettings();
+            this.display(); // Refresh the settings UI
+          });
+      });
+
+    // OpenAI settings for summarization
+    if (this.plugin.settings.summarizeSettings.provider === 'openai') {
+      new Setting(containerEl)
+        .setName('OpenAI Model')
+        .setDesc('Model to use for summarization')
+        .addText(text => text
+          .setPlaceholder('Enter model name')
+          .setValue(this.plugin.settings.summarizeSettings.openaiModel)
+          .onChange(async (value) => {
+            this.plugin.settings.summarizeSettings.openaiModel = value;
+            await this.plugin.saveSettings();
+          }));
+
+      new Setting(containerEl)
+        .setName('OpenAI API URL')
+        .setDesc('URL for OpenAI API')
+        .addText(text => text
+          .setPlaceholder('Enter API URL')
+          .setValue(this.plugin.settings.summarizeSettings.openaiApiUrl || '')
+          .onChange(async (value) => {
+            this.plugin.settings.summarizeSettings.openaiApiUrl = value;
+            await this.plugin.saveSettings();
+          }));
+    }
+
+    // Local settings for summarization
+    if (this.plugin.settings.summarizeSettings.provider === 'local') {
+      new Setting(containerEl)
+        .setName('Local API URL')
+        .setDesc('URL for local API')
+        .addText(text => text
+          .setPlaceholder('Enter API URL')
+          .setValue(this.plugin.settings.summarizeSettings.localApiUrl || '')
+          .onChange(async (value) => {
+            this.plugin.settings.summarizeSettings.localApiUrl = value;
+            await this.plugin.saveSettings();
+          }));
+
+      new Setting(containerEl)
+        .setName('Local Model')
+        .setDesc('Model to use for local summarization')
+        .addText(text => text
+          .setPlaceholder('Enter model name')
+          .setValue(this.plugin.settings.summarizeSettings.localModel || '')
+          .onChange(async (value) => {
+            this.plugin.settings.summarizeSettings.localModel = value;
+            await this.plugin.saveSettings();
+          }));
+    }
+
+    // Common summarization settings
+    new Setting(containerEl)
+      .setName('Max Tokens')
+      .setDesc('Maximum number of tokens for summarization')
+      .addSlider(slider => slider
+        .setLimits(100, 2000, 100)
+        .setValue(this.plugin.settings.summarizeSettings.maxTokens)
+        .onChange(async (value) => {
+          this.plugin.settings.summarizeSettings.maxTokens = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Temperature')
+      .setDesc('Temperature for summarization (0.0 - 1.0)')
+      .addSlider(slider => slider
+        .setLimits(0, 1, 0.1)
+        .setValue(this.plugin.settings.summarizeSettings.temperature)
+        .onChange(async (value) => {
+          this.plugin.settings.summarizeSettings.temperature = value;
+          await this.plugin.saveSettings();
+        }));
   }
 }

@@ -20,7 +20,6 @@ export default class AIHelperPlugin extends Plugin {
 			id: 'summarize-text',
 			name: 'Summarize selected text or current note',
 			editorCallback: (editor: Editor, view: MarkdownView) => {
-				const text = editor.getSelection() || editor.getValue();
 				summarizeSelection(editor, this.app, this.settings);
 			}
 		});
@@ -50,20 +49,19 @@ export default class AIHelperPlugin extends Plugin {
 						.setTitle('Summarize text')
 						.setIcon('file-text')
 						.onClick(() => {
-							const text = editor.getSelection() || editor.getValue();
 							summarizeSelection(editor, this.app, this.settings);
 						});
 				});
 			})
 		);
 
-		// If the plugin was just activated, open the AI chat view
-		// Do this with a small delay to ensure other plugins have time to initialize
-		setTimeout(() => {
-			if (this.settings.openChatOnStartup) {
+		// If the plugin was just activated and settings allow, open the AI chat view
+		if (this.settings.openChatOnStartup) {
+			// Small delay to ensure other plugins have time to initialize
+			setTimeout(() => {
 				openAIChat(this.app);
-			}
-		}, 500);
+			}, 500);
+		}
 	}
 
 	onunload() {

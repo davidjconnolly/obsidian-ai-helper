@@ -40,7 +40,6 @@ class AIHelperModal extends Modal {
   onSubmit: (summary: string, action: ModalAction) => void;
   settings: Settings;
   summary: string;
-  isStreaming: boolean;
   controller: AbortController;
 
   constructor(app: App, text: string, settings: Settings, onSubmit: (summary: string, action: ModalAction) => void) {
@@ -49,7 +48,6 @@ class AIHelperModal extends Modal {
     this.settings = settings;
     this.onSubmit = onSubmit;
     this.summary = '';
-    this.isStreaming = true;
     this.controller = new AbortController();
   }
 

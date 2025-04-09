@@ -16,15 +16,17 @@ export function debugLog(settings: Settings, message: string, ...data: any[]): v
 export async function getDeduplicatedFileContents(app: App, file: TFile, skipFrontmatter: boolean = false): Promise<string> {
   try {
     const content = await app.vault.cachedRead(file);
-    if (skipFrontmatter) {
-      // Remove frontmatter if it exists
-      if (content.startsWith('---')) {
-        const endFrontmatter = content.indexOf('---', 3);
-        if (endFrontmatter !== -1) {
-          return content.substring(endFrontmatter + 3).trim();
-        }
-      }
+
+    if (!skipFrontmatter || !content.startsWith('---')) {
+      return content;
     }
+
+    // Remove frontmatter
+    const endFrontmatter = content.indexOf('---', 3);
+    if (endFrontmatter !== -1) {
+      return content.substring(endFrontmatter + 3).trim();
+    }
+
     return content;
   } catch (error) {
     console.error(`Error reading file ${file.path}:`, error);
@@ -49,41 +51,42 @@ export function extractFrontmatter(content: string): Record<string, any> | null 
 
     for (const line of frontmatterLines) {
       const colonIndex = line.indexOf(':');
-      if (colonIndex !== -1) {
-        const key = line.substring(0, colonIndex).trim();
-        let value = line.substring(colonIndex + 1).trim();
+      if (colonIndex === -1) continue;
 
-        // Handle quotes around values
-        if ((value.startsWith('"') && value.endsWith('"')) ||
-            (value.startsWith("'") && value.endsWith("'"))) {
-          value = value.substring(1, value.length - 1);
-        }
+      const key = line.substring(0, colonIndex).trim();
+      let value = line.substring(colonIndex + 1).trim();
 
-        // Handle array values
-        if (value.startsWith('[') && value.endsWith(']')) {
-          try {
-            // Simple array parsing - split on commas
-            const arrayItems = value.substring(1, value.length - 1)
-              .split(',')
-              .map(item => item.trim());
+      // Handle quotes around values
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.substring(1, value.length - 1);
+      }
 
-            // Remove quotes from array items if they have them
-            const cleanedArray = arrayItems.map(item => {
-              if ((item.startsWith('"') && item.endsWith('"')) ||
-                  (item.startsWith("'") && item.endsWith("'"))) {
-                return item.substring(1, item.length - 1);
-              }
-              return item;
-            });
+      // Handle array values
+      if (value.startsWith('[') && value.endsWith(']')) {
+        try {
+          // Simple array parsing - split on commas
+          const arrayItems = value.substring(1, value.length - 1)
+            .split(',')
+            .map(item => item.trim())
+            .filter(item => item.length > 0);
 
-            result[key] = cleanedArray;
-          } catch (e) {
-            // If parsing fails, store as string
-            result[key] = value;
-          }
-        } else {
+          // Remove quotes from array items if they have them
+          const cleanedArray = arrayItems.map(item => {
+            if ((item.startsWith('"') && item.endsWith('"')) ||
+                (item.startsWith("'") && item.endsWith("'"))) {
+              return item.substring(1, item.length - 1);
+            }
+            return item;
+          });
+
+          result[key] = cleanedArray;
+        } catch (e) {
+          // If parsing fails, store as string
           result[key] = value;
         }
+      } else {
+        result[key] = value;
       }
     }
 

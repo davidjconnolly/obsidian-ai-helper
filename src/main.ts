@@ -327,7 +327,7 @@ export default class AIHelperPlugin extends Plugin {
 
 			// Show a notification if debug mode is enabled
 			if (this.settings.debugMode) {
-				new Notice(`Indexed: ${file.path}`, 2000);
+				new Notice(`Reindexed: ${file.path}`, 2000);
 			}
 		} catch (error) {
 			logError(`Error reindexing file ${file.path}`, error);
@@ -354,6 +354,11 @@ export default class AIHelperPlugin extends Plugin {
 			return;
 		}
 
+		// Create a custom notification for progress tracking
+		const progressNotice = new Notice('', 0);
+		const progressElement = progressNotice.noticeEl.createDiv();
+		progressElement.setText(`Indexing files: 0/${files.length}`);
+
 		// Process files in batches to avoid UI blocking
 		let processedCount = 0;
 		const processFiles = (batch: TFile[], startIndex: number) => {
@@ -375,10 +380,8 @@ export default class AIHelperPlugin extends Plugin {
 					processedCount++; // Still count as processed even if it fails
 				}
 			})).then(() => {
-				// Update notice every 20 files
-				if (processedCount % 20 === 0 || processedCount === files.length) {
-					new Notice(`Indexed ${processedCount}/${files.length} files`);
-				}
+				// Update notice with current progress
+				progressElement.setText(`Indexing files: ${processedCount}/${files.length}`);
 
 				// Process next batch
 				const nextStartIndex = startIndex + batch.length;
@@ -386,7 +389,9 @@ export default class AIHelperPlugin extends Plugin {
 					const nextBatch = files.slice(nextStartIndex, nextStartIndex + 10);
 					setTimeout(() => processFiles(nextBatch, nextStartIndex), 50);
 				} else {
-					new Notice(`Completed indexing ${processedCount} files for AI search`);
+					// Show completion notification
+					progressNotice.hide(); // Hide the progress notification
+					new Notice(`Completed indexing ${processedCount} files for AI search`, 3000);
 				}
 			});
 		};

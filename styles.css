@@ -193,20 +193,23 @@ If your plugin does not need CSS, delete this file.
 
 .ai-helper-chat-input {
   width: 100%;
+  min-height: 40px;
+  max-height: 200px;
+  resize: vertical;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
   background-color: var(--background-primary);
   color: var(--text-normal);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 4px;
-  resize: vertical;
-  padding: 8px;
-  font-family: inherit;
-  min-height: 80px;
-  max-height: 150px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
-.ai-helper-chat-input:focus {
-  outline: none;
-  border-color: var(--interactive-accent);
+.ai-helper-chat-input:disabled {
+  background-color: var(--background-modifier-form-field);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 /* Button styling */
@@ -256,9 +259,44 @@ If your plugin does not need CSS, delete this file.
 /* Button container styling */
 .ai-helper-button-container {
   display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 10px;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-helper-button-spacer {
+  flex: 1;
+}
+
+.ai-helper-button-container button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.ai-helper-button-container button.ai-helper-reset-button {
+  background-color: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.ai-helper-button-container button.ai-helper-reset-button:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-form-field);
+}
+
+.ai-helper-button-container button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.ai-helper-button-container button.mod-cta:disabled {
+  background-color: var(--interactive-accent);
+}
+
+.ai-helper-button-container button.ai-helper-reset-button:disabled {
+  background-color: var(--background-modifier-form-field);
 }
 
 /* Summary Modal Styles */

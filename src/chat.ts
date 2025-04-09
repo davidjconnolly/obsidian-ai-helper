@@ -89,6 +89,7 @@ export class AIChatView extends ItemView {
     messagesContainer: HTMLElement;
     inputContainer: HTMLElement;
     inputField: HTMLTextAreaElement;
+    sendButton: ButtonComponent;
     relevantNotes: NoteWithContent[] = [];
     app: App;
 
@@ -98,6 +99,7 @@ export class AIChatView extends ItemView {
     private contextManager: ContextManager;
     private llmConnector: LLMConnector;
     private isInitialized = false;
+    private isProcessing = false;
 
     constructor(leaf: WorkspaceLeaf, settings: Settings) {
         super(leaf);
@@ -162,19 +164,10 @@ export class AIChatView extends ItemView {
         const headerSection = mainContent.createDiv({ cls: 'ai-helper-chat-header' });
         headerSection.createEl('h3', { text: 'AI Assistant' });
 
-        // Add reset button
-        const resetButton = headerSection.createEl('button', {
-            cls: 'ai-helper-reset-button',
-            text: 'Reset Chat'
-        });
-        resetButton.addEventListener('click', () => {
-            this.resetChat();
-        });
-
         // Create context section for relevant notes
         const contextSection = mainContent.createDiv({ cls: 'ai-helper-context-section' });
         const contextHeader = contextSection.createDiv({ cls: 'ai-helper-context-header' });
-        contextHeader.setText('Context Notes');
+        contextHeader.setText('Relevant Notes');
         this.contextContainer = contextSection.createDiv({ cls: 'ai-helper-context-notes' });
 
         // Create messages container
@@ -189,15 +182,26 @@ export class AIChatView extends ItemView {
 
         // Add event listeners
         this.inputField.addEventListener('keydown', (e: KeyboardEvent) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === 'Enter' && !e.shiftKey && !this.isProcessing) {
                 e.preventDefault();
                 this.sendMessage();
             }
         });
 
-        // Create send button
+        // Create button container for both Reset and Send buttons
         const buttonContainer = this.inputContainer.createDiv({ cls: 'ai-helper-button-container' });
-        new ButtonComponent(buttonContainer)
+
+        // Add reset button to the left
+        const resetButton = new ButtonComponent(buttonContainer)
+            .setButtonText('Reset Chat')
+            .onClick(() => this.resetChat());
+        resetButton.buttonEl.classList.add('ai-helper-reset-button');
+
+        // Add spacer to push send button to the right
+        buttonContainer.createDiv({ cls: 'ai-helper-button-spacer' });
+
+        // Add send button to the right
+        this.sendButton = new ButtonComponent(buttonContainer)
             .setButtonText('Send')
             .setCta()
             .onClick(() => this.sendMessage());
@@ -312,17 +316,34 @@ export class AIChatView extends ItemView {
         this.inputField.focus();
     }
 
+    private setProcessingState(processing: boolean) {
+        this.isProcessing = processing;
+        this.inputField.disabled = processing;
+        if (processing) {
+            this.sendButton.setButtonText('Processing...');
+            this.sendButton.buttonEl.disabled = true;
+            this.inputField.placeholder = 'Please wait while I process your message...';
+        } else {
+            this.sendButton.setButtonText('Send');
+            this.sendButton.buttonEl.disabled = false;
+            this.inputField.placeholder = 'Ask about your notes...';
+        }
+    }
+
     async sendMessage() {
         const message = this.inputField.value.trim();
-        if (!message) return;
+        if (!message || this.isProcessing) return;
 
-        // Clear input field
-        this.inputField.value = '';
-
-        // Add user message to chat
-        this.addUserMessage(message);
+        // Set processing state
+        this.setProcessingState(true);
 
         try {
+            // Clear input field
+            this.inputField.value = '';
+
+            // Add user message to chat
+            this.addUserMessage(message);
+
             // Start initialization if not started already
             if (!isGloballyInitialized && !globalInitializationPromise) {
                 initializeEmbeddingSystem(this.settings, this.app);
@@ -352,6 +373,9 @@ export class AIChatView extends ItemView {
         } catch (error) {
             logError('Error processing message', error);
             this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+        } finally {
+            // Reset processing state
+            this.setProcessingState(false);
         }
     }
 
@@ -1413,19 +1437,37 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
                 }
             }
 
+            // Create a custom notification for progress tracking if debug mode is enabled
+            let progressNotice: Notice | null = null;
+            let progressElement: HTMLElement | null = null;
+
+            if (settings.debugMode) {
+                progressNotice = new Notice('', 0);
+                progressElement = progressNotice.noticeEl.createDiv();
+                progressElement.setText(`Indexing notes: 0/${files.length}`);
+            }
+
+            let processedCount = 0;
             for (const file of files) {
                 try {
                     logDebug(`Processing file: ${file.path}`);
                     const content = await app.vault.cachedRead(file);
                     await globalEmbeddingStore.addNote(file, content);
 
-                    // Add notification during initial indexing if debug mode is enabled
-                    if (settings.debugMode) {
-                        new Notice(`Indexed: ${file.path}`, 2000);
+                    // Update progress notification
+                    processedCount++;
+                    if (settings.debugMode && progressElement) {
+                        progressElement.setText(`Indexing notes: ${processedCount}/${files.length}`);
                     }
                 } catch (error) {
                     logError(`Error indexing note ${file.path}`, error);
                 }
+            }
+
+            // Show completion notification
+            if (settings.debugMode && progressNotice) {
+                progressNotice.hide(); // Hide the progress notification
+                new Notice(`Indexed ${files.length} notes for vector search`, 3000);
             }
 
             logDebug(`Indexed ${files.length} notes for vector search`);

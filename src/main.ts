@@ -1,6 +1,6 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { AI_CHAT_VIEW_TYPE, AIChatView, openAIChat, initializeEmbeddingSystem, globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat';
-import { DEFAULT_SETTINGS, Settings, SettingsTab } from './settings';
+import { DEFAULT_SETTINGS, Settings, AIHelperSettingTab } from './settings';
 import { summarizeSelection } from './summarize';
 import { TFile } from 'obsidian';
 
@@ -124,7 +124,7 @@ export default class AIHelperPlugin extends Plugin {
 		});
 
 		// Add settings tab
-		this.addSettingTab(new SettingsTab(this.app, this));
+		this.addSettingTab(new AIHelperSettingTab(this.app, this));
 
 		// Register context menu event
 		this.registerEvent(
@@ -284,7 +284,25 @@ export default class AIHelperPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const savedData = await this.loadData();
+		this.settings = {
+			...DEFAULT_SETTINGS,
+			chatSettings: {
+				...DEFAULT_SETTINGS.chatSettings,
+				...(savedData?.chatSettings || {})
+			},
+			embeddingSettings: {
+				...DEFAULT_SETTINGS.embeddingSettings,
+				...(savedData?.embeddingSettings || {})
+			},
+			summarizeSettings: {
+				...DEFAULT_SETTINGS.summarizeSettings,
+				...(savedData?.summarizeSettings || {})
+			},
+			openChatOnStartup: savedData?.openChatOnStartup ?? DEFAULT_SETTINGS.openChatOnStartup,
+			debugMode: savedData?.debugMode ?? DEFAULT_SETTINGS.debugMode,
+			fileUpdateFrequency: savedData?.fileUpdateFrequency ?? DEFAULT_SETTINGS.fileUpdateFrequency
+		};
 	}
 
 	async saveSettings() {

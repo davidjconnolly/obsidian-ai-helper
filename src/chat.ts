@@ -3,6 +3,10 @@ import { ItemView, WorkspaceLeaf } from 'obsidian';
 import { Settings } from './settings';
 import AIHelperPlugin from './main';
 
+interface EmbeddingModel {
+    embed: (text: string) => Promise<Float32Array>;
+}
+
 // Helper functions for consistent logging
 function logDebug(message: string) {
     console.log(`plugin:ai-helper: ${message}`);
@@ -369,7 +373,7 @@ export class AIChatView extends ItemView {
             const response = await this.generateResponse(message);
 
             // Add assistant response to chat
-            this.addAssistantMessage(response);
+            this.addAssistantMessage(response.content);
         } catch (error) {
             logError('Error processing message', error);
             this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
@@ -477,18 +481,18 @@ export class AIChatView extends ItemView {
         }
     }
 
-    async generateResponse(userQuery: string): Promise<string> {
+    async generateResponse(userQuery: string): Promise<ChatMessage> {
         // Create context from relevant notes
         const context = this.contextManager.buildContext(userQuery, this.relevantNotes, this.messages);
 
         // If embeddings are not initialized yet
         if (!isGloballyInitialized && globalInitializationPromise) {
-            return "I'm still initializing my search capabilities. I'll be able to search through your notes shortly. Feel free to ask your question again in a moment.";
+            return { role: 'assistant', content: "I'm still initializing my search capabilities. I'll be able to search through your notes shortly. Feel free to ask your question again in a moment." };
         }
 
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
-            return "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?";
+            return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
         }
 
         // Create system message with strong anti-hallucination directive
@@ -508,7 +512,7 @@ If you're not sure about something, say so clearly.`;
 
         // Send to LLM for processing
         const response = await this.llmConnector.generateResponse(messages);
-        return response.content;
+        return response;
     }
 
     // Add a method to reset the chat
@@ -548,15 +552,15 @@ If you're not sure about something, say so clearly.`;
 
 class EmbeddingStore {
     private embeddings: Map<string, NoteEmbedding> = new Map();
-    private embeddingModel: any;
     private settings: Settings;
-    private dimensions: number;
     private vectorStore: VectorStore;
+    private embeddingModel: EmbeddingModel;
+    private dimensions: number;
 
     constructor(settings: Settings, vectorStore: VectorStore) {
         this.settings = settings;
-        this.dimensions = settings.embeddingSettings.dimensions;
         this.vectorStore = vectorStore;
+        this.dimensions = settings.embeddingSettings.dimensions;
     }
 
     async initialize() {
@@ -593,7 +597,7 @@ class EmbeddingStore {
 
     async generateOpenAIEmbedding(text: string): Promise<Float32Array> {
         try {
-            const apiKey = this.settings.openAISettings.apiKey;
+            const apiKey = this.settings.chatSettings.openaiApiKey;
             const apiUrl = this.settings.embeddingSettings.openaiApiUrl || 'https://api.openai.com/v1/embeddings';
             const model = this.settings.embeddingSettings.openaiModel;
 
@@ -654,11 +658,6 @@ class EmbeddingStore {
             const headers: Record<string, string> = {
                 'Content-Type': 'application/json'
             };
-
-            // Add API key if provided
-            if (this.settings.localLLMSettings.apiKey) {
-                headers['Authorization'] = `Bearer ${this.settings.localLLMSettings.apiKey}`;
-            }
 
             const requestBody = {
                 model: model,
@@ -1299,31 +1298,16 @@ class LLMConnector {
     }
 
     async generateResponse(messages: ChatMessage[]): Promise<ChatMessage> {
-        // Determine which API endpoint to use
-        let apiEndpoint = 'https://api.openai.com/v1/chat/completions';
-        let apiKey = '';
-        let modelName = 'gpt-3.5-turbo';
-        let isLocalLLM = false;
+        const provider = this.settings.chatSettings.provider;
+        const apiEndpoint = provider === 'local'
+            ? this.settings.chatSettings.localApiUrl
+            : this.settings.chatSettings.openaiApiUrl;
+        const modelName = provider === 'local'
+            ? this.settings.chatSettings.localModel
+            : this.settings.chatSettings.openaiModel;
 
-        // Check if local LLM is enabled
-        const isLocalLLMEnabled = this.settings.localLLMSettings?.enabled && this.settings.localLLMSettings?.apiUrl;
-
-        if (isLocalLLMEnabled) {
-            // Use Local LLM settings
-            apiEndpoint = this.settings.localLLMSettings.apiUrl;
-            apiKey = this.settings.localLLMSettings.apiKey || '';
-            modelName = this.settings.localLLMSettings.modelName || 'mistral-7b-instruct';
-            isLocalLLM = true;
-        } else {
-            // Use OpenAI settings
-            apiEndpoint = this.settings.openAISettings?.apiUrl || 'https://api.openai.com/v1/chat/completions';
-            apiKey = this.settings.openAISettings?.apiKey || '';
-            modelName = this.settings.openAISettings?.modelName || 'gpt-3.5-turbo';
-
-            // Only check for OpenAI API key if OpenAI is being used
-            if (!apiKey) {
-                throw new Error('API key is missing. Please configure it in the settings.');
-            }
+        if (!apiEndpoint) {
+            throw new Error('API endpoint is not configured. Please check your settings.');
         }
 
         try {
@@ -1332,32 +1316,23 @@ class LLMConnector {
                 'Content-Type': 'application/json'
             };
 
-            // Only add Authorization header if API key is provided
-            if (apiKey) {
+            // Add Authorization header for OpenAI
+            if (provider === 'openai') {
+                const apiKey = this.settings.chatSettings.openaiApiKey;
+                if (!apiKey) {
+                    throw new Error('OpenAI API key is missing. Please configure it in the settings.');
+                }
                 headers['Authorization'] = `Bearer ${apiKey}`;
             }
 
-            // Prepare request body based on API type
-            let requestBody: any;
-
-            if (isLocalLLM) {
-                // Format for LM Studio
-                requestBody = {
-                    model: modelName,
-                    messages: messages,
-                    temperature: 0.7,
-                    max_tokens: 2000,
-                    stream: false
-                };
-            } else {
-                // Format for OpenAI
-                requestBody = {
-                    model: modelName,
-                    messages: messages,
-                    temperature: 0.7,
-                    max_tokens: 2000
-                };
-            }
+            // Prepare request body
+            const requestBody = {
+                model: modelName,
+                messages: messages,
+                temperature: this.settings.chatSettings.temperature,
+                max_tokens: this.settings.chatSettings.maxTokens,
+                stream: false
+            };
 
             const requestParams: RequestUrlParam = {
                 url: apiEndpoint,

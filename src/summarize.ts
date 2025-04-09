@@ -93,7 +93,9 @@ class AIHelperModal extends Modal {
 
   async streamSummary(markdownPreview: HTMLTextAreaElement, inlineButton: HTMLButtonElement, summarizeButton: HTMLButtonElement, copyButton: HTMLButtonElement) {
     try {
-      const apiUrl = this.settings.localLLMSettings.enabled ? this.settings.localLLMSettings.apiUrl : this.settings.openAISettings.apiUrl;
+      const apiUrl = this.settings.summarizeSettings.provider === 'local'
+        ? this.settings.summarizeSettings.localApiUrl
+        : this.settings.summarizeSettings.openaiApiUrl;
 
       if (!apiUrl) {
         throw new Error('API URL is not configured');
@@ -101,22 +103,26 @@ class AIHelperModal extends Modal {
 
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
-      if (!this.settings.localLLMSettings.enabled) {
-        headers['Authorization'] = `Bearer ${this.settings.openAISettings.apiKey}`;
+      if (this.settings.summarizeSettings.provider === 'openai') {
+        headers['Authorization'] = `Bearer ${this.settings.chatSettings.openaiApiKey}`;
       }
 
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: this.settings.localLLMSettings.enabled ? this.settings.localLLMSettings.modelName : this.settings.openAISettings.modelName,
+          model: this.settings.summarizeSettings.provider === 'local'
+            ? this.settings.summarizeSettings.localModel
+            : this.settings.summarizeSettings.openaiModel,
           messages: [
             { role: 'system', content: 'You are an expert at summarizing text clearly and concisely.' },
             { role: 'system', content: 'I will provide short snippets of text, often without context. Summarize them briefly and accurately.' },
             { role: 'system', content: 'Provide clear, direct summaries without any special formatting or markdown.' },
             { role: 'user', content: `Summarize the following text:\n\n${this.text}` }
           ],
-          stream: true
+          stream: true,
+          max_tokens: this.settings.summarizeSettings.maxTokens,
+          temperature: this.settings.summarizeSettings.temperature
         }),
         signal: this.controller.signal
       });

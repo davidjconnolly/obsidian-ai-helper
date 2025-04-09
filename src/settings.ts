@@ -23,8 +23,6 @@ export interface ChatSettings {
   temperature: number;
   maxNotesToSearch: number;
   displayWelcomeMessage: boolean;
-  includeTags: boolean;
-  includeTaskItems: boolean;
 }
 
 export interface SummarizeSettings {
@@ -58,8 +56,6 @@ export const DEFAULT_SETTINGS: Settings = {
     temperature: 0.7,
     maxNotesToSearch: 20,
     displayWelcomeMessage: true,
-    includeTags: true,
-    includeTaskItems: true,
   },
   embeddingSettings: {
     provider: 'openai',
@@ -214,26 +210,6 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.chatSettings.displayWelcomeMessage)
         .onChange(async (value) => {
           this.plugin.settings.chatSettings.displayWelcomeMessage = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Include Tags')
-      .setDesc('Include tags in note context')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.chatSettings.includeTags)
-        .onChange(async (value) => {
-          this.plugin.settings.chatSettings.includeTags = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('Include Task Items')
-      .setDesc('Include task items in note context')
-      .addToggle(toggle => toggle
-        .setValue(this.plugin.settings.chatSettings.includeTaskItems)
-        .onChange(async (value) => {
-          this.plugin.settings.chatSettings.includeTaskItems = value;
           await this.plugin.saveSettings();
         }));
 

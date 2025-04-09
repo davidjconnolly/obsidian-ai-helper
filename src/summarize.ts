@@ -10,14 +10,21 @@ export enum ModalAction {
 
 export async function summarizeSelection(editor: Editor, app: App, settings: Settings) {
   const selectedText = editor.getSelection();
-  if (!selectedText) {
-    new Notice('No text selected');
+  const textToSummarize = selectedText.trim() || editor.getValue();
+
+  if (!textToSummarize) {
+    new Notice('No text to summarize');
     return;
   }
 
-  const modal = new AIHelperModal(app, selectedText, settings, async (finalSummary: string, action: ModalAction) => {
+  const modal = new AIHelperModal(app, textToSummarize, settings, async (finalSummary: string, action: ModalAction) => {
     if (action === ModalAction.inline) {
-      editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}`);
+      if (selectedText) {
+        editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}`);
+      } else {
+        const currentContent = editor.getValue();
+        editor.setValue(`${currentContent}\n\n**Summary:**\n${finalSummary}`);
+      }
     } else if (action === ModalAction.summarize) {
       const currentContent = editor.getValue();
       const summarySection = `# Summary\n\n${finalSummary.trim()}\n\n----`;

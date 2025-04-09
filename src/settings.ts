@@ -22,6 +22,9 @@ export interface ChatSettings {
   maxTokens: number;
   temperature: number;
   maxNotesToSearch: number;
+  displayWelcomeMessage: boolean;
+  includeTags: boolean;
+  includeTaskItems: boolean;
 }
 
 export interface SummarizeSettings {
@@ -54,6 +57,9 @@ export const DEFAULT_SETTINGS: Settings = {
     maxTokens: 500,
     temperature: 0.7,
     maxNotesToSearch: 20,
+    displayWelcomeMessage: true,
+    includeTags: true,
+    includeTaskItems: true,
   },
   embeddingSettings: {
     provider: 'openai',
@@ -198,6 +204,36 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.chatSettings.maxNotesToSearch.toString())
         .onChange(async (value) => {
           this.plugin.settings.chatSettings.maxNotesToSearch = parseInt(value) || 20;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Display Welcome Message')
+      .setDesc('Show a welcome message when opening the chat or after reset')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.chatSettings.displayWelcomeMessage)
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.displayWelcomeMessage = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Include Tags')
+      .setDesc('Include tags in note context')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.chatSettings.includeTags)
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.includeTags = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Include Task Items')
+      .setDesc('Include task items in note context')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.chatSettings.includeTaskItems)
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.includeTaskItems = value;
           await this.plugin.saveSettings();
         }));
 

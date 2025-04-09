@@ -1,5 +1,6 @@
 import { App, Editor, Notice, Modal } from 'obsidian';
 import { Settings } from './settings';
+import { logError } from './utils';
 
 export enum ModalAction {
   inline,
@@ -26,7 +27,7 @@ export async function summarizeSelection(editor: Editor, app: App, settings: Set
       navigator.clipboard.writeText(finalSummary).then(() => {
         new Notice('Summary copied to clipboard');
       }).catch(err => {
-        console.error('Failed to copy text: ', err);
+        logError('Failed to copy text', err);
       });
     } else {
       return;
@@ -171,7 +172,8 @@ class AIHelperModal extends Modal {
       summarizeButton.removeAttribute('disabled');
       copyButton.removeAttribute('disabled');
     } catch (error) {
-      console.error('Error summarizing text:', error);
+      logError('Error summarizing text', error);
+      new Notice('Error generating summary. Please try again.');
       markdownPreview.value = 'Failed to summarize text:\n' + error;
 
       markdownPreview.setAttribute('disabled', 'true');

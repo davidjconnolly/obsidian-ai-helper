@@ -2,18 +2,10 @@ import { App, Notice, TFile, MarkdownView, ButtonComponent, MarkdownRenderer, re
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import { Settings } from './settings';
 import AIHelperPlugin from './main';
+import { logDebug, logError } from './utils';
 
 interface EmbeddingModel {
     embed: (text: string) => Promise<Float32Array>;
-}
-
-// Helper functions for consistent logging
-function logDebug(message: string) {
-    console.log(`plugin:ai-helper: ${message}`);
-}
-
-function logError(message: string, error?: any) {
-    console.error(`plugin:ai-helper: ${message}`, error || '');
 }
 
 // Define the view type for the AI Chat
@@ -111,7 +103,7 @@ export class AIChatView extends ItemView {
         this.app = this.leaf.view.app;
 
         // Use global instances if they exist, otherwise create new ones
-        this.vectorStore = globalVectorStore || new VectorStore(settings.embeddingSettings.dimensions, this.app);
+        this.vectorStore = globalVectorStore || new VectorStore(settings.embeddingSettings.dimensions, settings, this.app);
         this.embeddingStore = globalEmbeddingStore || new EmbeddingStore(settings, this.vectorStore);
 
         // If we created new instances, store them globally
@@ -148,8 +140,10 @@ export class AIChatView extends ItemView {
         // Initialize empty context notes display
         this.displayContextNotes();
 
-        // Add welcome message
-        this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+        // Add welcome message if enabled in settings
+        if (this.settings.chatSettings.displayWelcomeMessage) {
+            this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+        }
 
         // Check if already initialized or initializing
         if (isGloballyInitialized) {
@@ -388,7 +382,7 @@ export class AIChatView extends ItemView {
             const content = await this.app.vault.cachedRead(file);
             await this.embeddingStore.addNote(file, content);
         } catch (error) {
-            console.error(`Error indexing note ${file.path}:`, error);
+            logError(`Error indexing note ${file.path}`, error);
         }
     }
 
@@ -396,15 +390,15 @@ export class AIChatView extends ItemView {
         try {
             // If not initialized, return empty array
             if (!isGloballyInitialized && !globalInitializationPromise) {
-                logDebug('Vector search not yet initialized, returning empty results');
+                logDebug(this.settings, 'Vector search not yet initialized, returning empty results');
                 return [];
             }
 
-            logDebug(`Starting search for query: ${query}`);
+            logDebug(this.settings, `Starting search for query: ${query}`);
 
             // Generate embedding for the query
             const queryEmbedding = await this.embeddingStore.generateEmbedding(query);
-            logDebug('Generated query embedding');
+            logDebug(this.settings, 'Generated query embedding');
 
             // Extract key terms for title matching
             const searchTerms = query
@@ -412,7 +406,7 @@ export class AIChatView extends ItemView {
                 .split(/\s+/)
                 .filter(term => term.length > 3)
                 .map(term => term.replace(/[^\w\s]/g, ''));
-            logDebug(`Search terms: ${searchTerms.join(', ')}`);
+            logDebug(this.settings, `Search terms: ${searchTerms.join(', ')}`);
 
             // Get the active file if any
             const activeFile = this.app.workspace.getActiveFile();
@@ -427,7 +421,7 @@ export class AIChatView extends ItemView {
                 app: this.app // Pass the app instance for better file access
             });
 
-            logDebug('Vector search results: ' +
+            logDebug(this.settings, 'Vector search results: ' +
                 results.map(r => ({
                     path: r.path,
                     score: r.score.toFixed(3),
@@ -444,14 +438,14 @@ export class AIChatView extends ItemView {
 
             for (const result of results) {
                 if (processedPaths.has(result.path)) {
-                    logDebug(`Skipping duplicate path: ${result.path}`);
+                    logDebug(this.settings, `Skipping duplicate path: ${result.path}`);
                     continue;
                 }
                 processedPaths.add(result.path);
 
                 const file = this.app.vault.getAbstractFileByPath(result.path) as TFile;
                 if (!file || !(file instanceof TFile)) {
-                    logDebug(`Invalid file at path: ${result.path}`);
+                    logDebug(this.settings, `Invalid file at path: ${result.path}`);
                     continue;
                 }
 
@@ -460,7 +454,7 @@ export class AIChatView extends ItemView {
                     const mtime = file.stat.mtime;
                     const lastModified = new Date(mtime).toLocaleString();
 
-                    logDebug(`Found relevant note: ${file.path} (score: ${result.score.toFixed(3)}, modified: ${lastModified})`);
+                    logDebug(this.settings, `Found relevant note: ${file.path} (score: ${result.score.toFixed(3)}, modified: ${lastModified})`);
 
                     relevantNotes.push({
                         file,
@@ -473,7 +467,7 @@ export class AIChatView extends ItemView {
                 }
             }
 
-            logDebug(`Final relevant notes count: ${relevantNotes.length}`);
+            logDebug(this.settings, `Final relevant notes count: ${relevantNotes.length}`);
             return relevantNotes;
         } catch (error) {
             logError('Error finding relevant notes', error);
@@ -525,8 +519,10 @@ If you're not sure about something, say so clearly.`;
         this.relevantNotes = [];
         this.displayContextNotes();
 
-        // Add welcome message
-        this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+        // Add welcome message if enabled in settings
+        if (this.settings.chatSettings.displayWelcomeMessage) {
+            this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+        }
     }
 
     // This method is kept for backward compatibility
@@ -565,7 +561,7 @@ class EmbeddingStore {
 
     async initialize() {
         try {
-            logDebug('Initializing EmbeddingStore');
+            logDebug(this.settings, 'Initializing EmbeddingStore');
             // Initialize the embedding model based on settings
             const provider = this.settings.embeddingSettings.provider;
 
@@ -576,7 +572,7 @@ class EmbeddingStore {
                         return await this.generateOpenAIEmbedding(text);
                     }
                 };
-                logDebug('Using OpenAI embeddings');
+                logDebug(this.settings, 'Using OpenAI embeddings');
             } else if (provider === 'local') {
                 // Use local embeddings
                 this.embeddingModel = {
@@ -584,11 +580,11 @@ class EmbeddingStore {
                         return await this.generateLocalEmbedding(text);
                     }
                 };
-                logDebug('Using local embeddings');
+                logDebug(this.settings, 'Using local embeddings');
             } else {
                 throw new Error('Invalid embedding provider. Must be either "openai" or "local".');
             }
-            logDebug('EmbeddingStore initialized successfully');
+            logDebug(this.settings, 'EmbeddingStore initialized successfully');
         } catch (error) {
             logError('Error initializing EmbeddingStore', error);
             throw error;
@@ -697,7 +693,7 @@ class EmbeddingStore {
 
     async addNote(file: TFile, content: string) {
         try {
-            logDebug(`Processing note for embeddings: ${file.path}`);
+            logDebug(this.settings, `Processing note for embeddings: ${file.path}`);
 
             // Handle empty or very short content gracefully
             if (!this.isValidContent(file.path, content)) {
@@ -705,18 +701,18 @@ class EmbeddingStore {
             }
 
             const chunks = this.chunkContent(content);
-            logDebug(`Created ${chunks.length} chunks for ${file.path}`);
+            logDebug(this.settings, `Created ${chunks.length} chunks for ${file.path}`);
 
             // If no chunks were created, skip this file
             if (chunks.length === 0) {
-                logDebug(`No chunks created for ${file.path}. Skipping.`);
+                logDebug(this.settings, `No chunks created for ${file.path}. Skipping.`);
                 return;
             }
 
             const embeddings = await Promise.all(
                 chunks.map(async (chunk, index) => {
                     const embedding = await this.generateEmbedding(chunk.content);
-                    logDebug(`Generated embedding for chunk ${index + 1}/${chunks.length} of ${file.path}`);
+                    logDebug(this.settings, `Generated embedding for chunk ${index + 1}/${chunks.length} of ${file.path}`);
                     return embedding;
                 })
             );
@@ -733,7 +729,7 @@ class EmbeddingStore {
             // Store in both EmbeddingStore and VectorStore
             this.embeddings.set(file.path, noteEmbedding);
             this.vectorStore.addEmbedding(file.path, noteEmbedding);
-            logDebug(`Successfully added embeddings for ${file.path}`);
+            logDebug(this.settings, `Successfully added embeddings for ${file.path}`);
         } catch (error) {
             logError(`Error adding note ${file.path}`, error);
             throw error;
@@ -905,13 +901,13 @@ class EmbeddingStore {
         this.embeddings.delete(path);
         // Also remove from the vector store
         this.vectorStore.removeEmbedding(path);
-        logDebug(`Removed embeddings for ${path}`);
+        logDebug(this.settings, `Removed embeddings for ${path}`);
     }
 
     // Helper method to validate note content before processing
     private isValidContent(path: string, content: string): boolean {
         if (!content || content.trim().length < 50) {
-            logDebug(`File ${path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
+            logDebug(this.settings, `File ${path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
             return false;
         }
         return true;
@@ -923,9 +919,11 @@ class VectorStore {
     private dimensions: number;
     private index: Map<string, { chunks: NoteChunk[], maxScore: number }> = new Map();
     private app: App | null = null;
+    private settings: Settings;
 
-    constructor(dimensions: number, app?: App) {
+    constructor(dimensions: number, settings: Settings, app?: App) {
         this.dimensions = dimensions;
+        this.settings = settings;
         this.app = app || null;
     }
 
@@ -1067,7 +1065,7 @@ class VectorStore {
             .slice(0, limit)
             .map(({ baseScore, ...rest }) => rest); // Remove baseScore from final results
 
-        logDebug(`Search results with scores: ${
+        logDebug(this.settings, `Search results with scores: ${
             sortedResults.map(r =>
                 `${r.path.split('/').pop()} (${r.score.toFixed(2)})`
             ).join(', ')
@@ -1104,7 +1102,7 @@ class VectorStore {
     addEmbedding(path: string, embedding: NoteEmbedding) {
         // Validate the embedding before adding
         if (!embedding || !embedding.chunks || embedding.chunks.length === 0) {
-            logDebug(`Skipping embedding for path: ${path} - No chunks available`);
+            logDebug(this.settings, `Skipping embedding for path: ${path} - No chunks available`);
             return;
         }
 
@@ -1118,12 +1116,12 @@ class VectorStore {
         });
 
         if (!validChunks) {
-            logDebug(`Skipping invalid embedding for path: ${path} - Dimension mismatch`);
+            logDebug(this.settings, `Skipping invalid embedding for path: ${path} - Dimension mismatch`);
             return;
         }
 
         this.embeddings.set(path, embedding);
-        logDebug(`Added embedding for ${path} with ${embedding.chunks.length} chunks`);
+        logDebug(this.settings, `Added embedding for ${path} with ${embedding.chunks.length} chunks`);
 
         // Initialize index entry
         this.index.set(path, {
@@ -1369,7 +1367,7 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
 
     // Create global instances if they don't exist yet
     if (!globalVectorStore) {
-        globalVectorStore = new VectorStore(settings.embeddingSettings.dimensions, app);
+        globalVectorStore = new VectorStore(settings.embeddingSettings.dimensions, settings, app);
     } else {
         // Ensure the app is set on the existing vector store
         globalVectorStore.setApp(app);
@@ -1386,7 +1384,7 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
 
             // Index all markdown files
             const files = app.vault.getMarkdownFiles();
-            logDebug(`Starting to index ${files.length} notes for vector search`);
+            logDebug(settings, `Starting to index ${files.length} notes for vector search`);
 
             if (files.length === 0) {
                 logError("No markdown files found in the vault. This is unexpected.");
@@ -1394,9 +1392,9 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
                 // Add a more detailed log to help diagnose the issue
                 try {
                     const allFiles = app.vault.getAllLoadedFiles();
-                    logDebug(`Total files in vault: ${allFiles.length}`);
+                    logDebug(settings, `Total files in vault: ${allFiles.length}`);
                     if (allFiles.length > 0) {
-                        logDebug(`Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
+                        logDebug(settings, `Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
                     }
                 } catch (e) {
                     logError("Error inspecting vault files", e);
@@ -1416,7 +1414,7 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
             let processedCount = 0;
             for (const file of files) {
                 try {
-                    logDebug(`Processing file: ${file.path}`);
+                    logDebug(settings, `Processing file: ${file.path}`);
                     const content = await app.vault.cachedRead(file);
                     await globalEmbeddingStore.addNote(file, content);
 
@@ -1436,19 +1434,19 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
                 new Notice(`Indexed ${files.length} notes for vector search`, 3000);
             }
 
-            logDebug(`Indexed ${files.length} notes for vector search`);
+            logDebug(settings, `Indexed ${files.length} notes for vector search`);
             isGloballyInitialized = true;
 
             // Dispatch a custom event that the plugin can listen for
             // to trigger processing of any pending file updates
-            logDebug("Embedding initialization complete");
+            logDebug(settings, "Embedding initialization complete");
 
             // Create custom event with payload indicating this is initial indexing
             const event = new CustomEvent('ai-helper-indexing-complete', {
                 detail: { isInitialIndexing: true }
             });
             document.dispatchEvent(event);
-            logDebug("Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
+            logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
 
         } catch (error) {
             logError('Error initializing vector search', error);

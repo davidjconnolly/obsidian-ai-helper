@@ -388,17 +388,11 @@ export class AIChatView extends ItemView {
 
     async findRelevantNotes(query: string): Promise<NoteWithContent[]> {
         try {
-            // If not initialized, return empty array
-            if (!isGloballyInitialized && !globalInitializationPromise) {
-                logDebug(this.settings, 'Vector search not yet initialized, returning empty results');
-                return [];
-            }
-
-            logDebug(this.settings, `Starting search for query: ${query}`);
+            console.log('Starting search for query:', query);
 
             // Generate embedding for the query
             const queryEmbedding = await this.embeddingStore.generateEmbedding(query);
-            logDebug(this.settings, 'Generated query embedding');
+            console.log('Generated query embedding');
 
             // Extract key terms for title matching
             const searchTerms = query
@@ -406,7 +400,7 @@ export class AIChatView extends ItemView {
                 .split(/\s+/)
                 .filter(term => term.length > 3)
                 .map(term => term.replace(/[^\w\s]/g, ''));
-            logDebug(this.settings, `Search terms: ${searchTerms.join(', ')}`);
+            console.log('Search terms:', searchTerms);
 
             // Get the active file if any
             const activeFile = this.app.workspace.getActiveFile();
@@ -417,20 +411,15 @@ export class AIChatView extends ItemView {
                 similarity: 0.5,
                 limit: this.settings.chatSettings.maxNotesToSearch || 5,
                 searchTerms,
-                file, // Pass the active file for recency context
-                app: this.app // Pass the app instance for better file access
+                file // Pass the active file for recency context
             });
 
-            logDebug(this.settings, 'Vector search results: ' +
-                results.map(r => ({
-                    path: r.path,
-                    score: r.score.toFixed(3),
-                    recencyScore: r.recencyScore?.toFixed(3) || '0',
-                    titleScore: r.titleScore?.toFixed(3) || '0'
-                }))
-                .map(r => `${r.path} (${r.score})`)
-                .join(', ')
-            );
+            console.log('Vector search results:', results.map(r => ({
+                path: r.path,
+                score: r.score,
+                recencyScore: r.recencyScore,
+                titleScore: r.titleScore
+            })));
 
             // Process results
             const relevantNotes: NoteWithContent[] = [];
@@ -438,14 +427,14 @@ export class AIChatView extends ItemView {
 
             for (const result of results) {
                 if (processedPaths.has(result.path)) {
-                    logDebug(this.settings, `Skipping duplicate path: ${result.path}`);
+                    console.log('Skipping duplicate path:', result.path);
                     continue;
                 }
                 processedPaths.add(result.path);
 
                 const file = this.app.vault.getAbstractFileByPath(result.path) as TFile;
                 if (!file || !(file instanceof TFile)) {
-                    logDebug(this.settings, `Invalid file at path: ${result.path}`);
+                    console.log('Invalid file at path:', result.path);
                     continue;
                 }
 
@@ -454,7 +443,15 @@ export class AIChatView extends ItemView {
                     const mtime = file.stat.mtime;
                     const lastModified = new Date(mtime).toLocaleString();
 
-                    logDebug(this.settings, `Found relevant note: ${file.path} (score: ${result.score.toFixed(3)}, modified: ${lastModified})`);
+                    console.log('Found relevant note:', {
+                        path: file.path,
+                        score: result.score,
+                        recencyScore: result.recencyScore,
+                        titleScore: result.titleScore,
+                        lastModified,
+                        chunkIndex: result.chunkIndex,
+                        contentLength: content.length
+                    });
 
                     relevantNotes.push({
                         file,
@@ -463,14 +460,14 @@ export class AIChatView extends ItemView {
                         chunkIndex: result.chunkIndex
                     });
                 } catch (error) {
-                    logError(`Error reading file ${file.path}`, error);
+                    console.error(`Error reading file ${file.path}:`, error);
                 }
             }
 
-            logDebug(this.settings, `Final relevant notes count: ${relevantNotes.length}`);
+            console.log('Final relevant notes count:', relevantNotes.length);
             return relevantNotes;
         } catch (error) {
-            logError('Error finding relevant notes', error);
+            console.error('Error finding relevant notes:', error);
             return [];
         }
     }
@@ -503,6 +500,10 @@ If you're not sure about something, say so clearly.`;
             { role: 'user', content: context },
             { role: 'user', content: userQuery }
         ];
+
+        console.log('*****************');
+        console.log(messages)
+        console.log('*****************');
 
         // Send to LLM for processing
         const response = await this.llmConnector.generateResponse(messages);
@@ -924,7 +925,7 @@ class VectorStore {
     constructor(dimensions: number, settings: Settings, app?: App) {
         this.dimensions = dimensions;
         this.settings = settings;
-        this.app = app || null;
+        if (app) this.setApp(app);
     }
 
     setApp(app: App) {
@@ -949,7 +950,6 @@ class VectorStore {
         limit: number;
         searchTerms?: string[];
         file?: TFile;
-        app?: App;
     }): Promise<{
         path: string;
         score: number;
@@ -958,7 +958,7 @@ class VectorStore {
         recencyScore?: number;
     }[]> {
         if (this.embeddings.size === 0) {
-            logError('No embeddings found in vector store');
+            console.warn('No embeddings found in vector store');
             return [];
         }
 
@@ -975,9 +975,6 @@ class VectorStore {
         const limit = options.limit || 5;
         const searchTerms = options.searchTerms || [];
 
-        // Use the app from options or this.app
-        const app = options.app || this.app;
-
         for (const [path, noteEmbedding] of this.embeddings.entries()) {
             let maxSimilarity = 0;
             let bestChunkIndex = -1;
@@ -992,18 +989,8 @@ class VectorStore {
             }, 0);
 
             // Calculate recency score if we have access to the file
-            let recencyScore = 0;
-            if (app) {
-                const file = app.vault.getAbstractFileByPath(path);
-                if (file instanceof TFile) {
-                    recencyScore = this.calculateRecencyScore(file.stat.mtime);
-                }
-            } else if (options.file) {
-                // Fallback to the specified file if its path matches
-                if (options.file.path === path) {
-                    recencyScore = this.calculateRecencyScore(options.file.stat.mtime);
-                }
-            }
+            const file = this.app?.vault.getAbstractFileByPath(path);
+            const recencyScore = file instanceof TFile ? this.calculateRecencyScore(file.stat.mtime) : 0;
 
             // Track the best matching chunks for this note
             const noteChunks: { similarity: number; index: number; isHeader: boolean }[] = [];
@@ -1065,11 +1052,12 @@ class VectorStore {
             .slice(0, limit)
             .map(({ baseScore, ...rest }) => rest); // Remove baseScore from final results
 
-        logDebug(this.settings, `Search results with scores: ${
-            sortedResults.map(r =>
-                `${r.path.split('/').pop()} (${r.score.toFixed(2)})`
-            ).join(', ')
-        }`);
+        console.log('Search results with scores:', sortedResults.map(r => ({
+            path: r.path,
+            total: r.score.toFixed(3),
+            title: r.titleScore?.toFixed(3) || '0',
+            recency: r.recencyScore?.toFixed(3) || '0'
+        })));
 
         return sortedResults;
     }
@@ -1154,8 +1142,10 @@ class ContextManager {
     }
 
     buildContext(query: string, notes: NoteWithContent[], history: ChatMessage[]): string {
-        // Format conversation history
-        let context = this.formatConversationHistory(history);
+        // Format conversation history, excluding the current message
+        // Create a copy of the history without the last message (which is the current query)
+        const historyWithoutCurrent = history.slice(0, -1);
+        let context = this.formatConversationHistory(historyWithoutCurrent);
 
         // Add relevant notes
         if (notes.length > 0) {

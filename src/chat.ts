@@ -1,9 +1,30 @@
 import { App, Notice, TFile, MarkdownView, ButtonComponent, MarkdownRenderer, requestUrl, RequestUrlParam } from 'obsidian';
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import { Settings } from './settings';
+import AIHelperPlugin from './main';
+
+// Helper functions for consistent logging
+function logDebug(message: string) {
+    console.log(`plugin:ai-helper: ${message}`);
+}
+
+function logError(message: string, error?: any) {
+    console.error(`plugin:ai-helper: ${message}`, error || '');
+}
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
+
+// Static initialization state to track across instances
+let globalInitializationPromise: Promise<void> | null = null;
+let isGloballyInitialized = false;
+
+// Export these for use in main.ts
+export { globalInitializationPromise, isGloballyInitialized };
+
+// Classes for embedding management
+let globalVectorStore: VectorStore | null = null;
+export let globalEmbeddingStore: EmbeddingStore | null = null;
 
 // Interface for a chat message
 interface ChatMessage {
@@ -83,9 +104,17 @@ export class AIChatView extends ItemView {
         this.settings = settings;
         this.app = this.leaf.view.app;
 
-        // Initialize components in correct order
-        this.vectorStore = new VectorStore(settings.embeddingSettings.dimensions);
-        this.embeddingStore = new EmbeddingStore(settings, this.vectorStore);
+        // Use global instances if they exist, otherwise create new ones
+        this.vectorStore = globalVectorStore || new VectorStore(settings.embeddingSettings.dimensions, this.app);
+        this.embeddingStore = globalEmbeddingStore || new EmbeddingStore(settings, this.vectorStore);
+
+        // If we created new instances, store them globally
+        if (!globalVectorStore) globalVectorStore = this.vectorStore;
+        if (!globalEmbeddingStore) globalEmbeddingStore = this.embeddingStore;
+
+        // Always ensure the app is set on the vector store
+        this.vectorStore.setApp(this.app);
+
         this.contextManager = new ContextManager(this.vectorStore);
         this.llmConnector = new LLMConnector(settings);
     }
@@ -110,17 +139,19 @@ export class AIChatView extends ItemView {
         // Create chat view layout
         this.createChatLayout(contentEl);
 
-        // Initialize vector search if not already done
-        if (!this.isInitialized) {
-            await this.initializeVectorSearch();
-            this.isInitialized = true;
-        }
-
         // Initialize empty context notes display
         this.displayContextNotes();
 
         // Add welcome message
         this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+
+        // Check if already initialized or initializing
+        if (isGloballyInitialized) {
+            this.isInitialized = true;
+        } else if (!globalInitializationPromise) {
+            // Start initialization if it hasn't started yet
+            initializeEmbeddingSystem(this.settings, this.app);
+        }
     }
 
     createChatLayout(container: HTMLElement) {
@@ -282,48 +313,45 @@ export class AIChatView extends ItemView {
     }
 
     async sendMessage() {
-        const userQuery = this.inputField.value.trim();
-        if (!userQuery) return;
+        const message = this.inputField.value.trim();
+        if (!message) return;
 
-        // Clear input
+        // Clear input field
         this.inputField.value = '';
 
         // Add user message to chat
-        this.addUserMessage(userQuery);
+        this.addUserMessage(message);
 
         try {
-            // Find relevant notes using vector search
-            this.relevantNotes = await this.findRelevantNotes(userQuery);
+            // Start initialization if not started already
+            if (!isGloballyInitialized && !globalInitializationPromise) {
+                initializeEmbeddingSystem(this.settings, this.app);
+            }
 
-            // Update the context display
+            // If initialization is in progress, wait for it to complete
+            if (globalInitializationPromise && !isGloballyInitialized) {
+                const loadingMessage = this.messagesContainer.createDiv({
+                    cls: 'ai-helper-chat-message ai-helper-chat-message-assistant ai-helper-chat-loading'
+                });
+                loadingMessage.setText('Initializing search capabilities...');
+
+                await globalInitializationPromise;
+                loadingMessage.remove();
+                this.isInitialized = true;
+            }
+
+            // Find relevant notes based on the query
+            this.relevantNotes = await this.findRelevantNotes(message);
             this.displayContextNotes();
 
             // Generate response using the found notes
-            const response = await this.generateResponse(userQuery);
+            const response = await this.generateResponse(message);
 
             // Add assistant response to chat
             this.addAssistantMessage(response);
         } catch (error) {
-            console.error('Error processing message:', error);
+            logError('Error processing message', error);
             this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
-        }
-    }
-
-    async initializeVectorSearch() {
-        try {
-            // Initialize the embedding store
-            await this.embeddingStore.initialize();
-
-            // Index all markdown files
-            const files = this.app.vault.getMarkdownFiles();
-            for (const file of files) {
-                await this.indexNote(file);
-            }
-
-            console.log(`Indexed ${files.length} notes for vector search`);
-        } catch (error) {
-            console.error('Error initializing vector search:', error);
-            new Notice('Error initializing vector search. Some features may not work correctly.');
         }
     }
 
@@ -338,11 +366,17 @@ export class AIChatView extends ItemView {
 
     async findRelevantNotes(query: string): Promise<NoteWithContent[]> {
         try {
-            console.log('Starting search for query:', query);
+            // If not initialized, return empty array
+            if (!isGloballyInitialized && !globalInitializationPromise) {
+                logDebug('Vector search not yet initialized, returning empty results');
+                return [];
+            }
+
+            logDebug(`Starting search for query: ${query}`);
 
             // Generate embedding for the query
             const queryEmbedding = await this.embeddingStore.generateEmbedding(query);
-            console.log('Generated query embedding');
+            logDebug('Generated query embedding');
 
             // Extract key terms for title matching
             const searchTerms = query
@@ -350,7 +384,7 @@ export class AIChatView extends ItemView {
                 .split(/\s+/)
                 .filter(term => term.length > 3)
                 .map(term => term.replace(/[^\w\s]/g, ''));
-            console.log('Search terms:', searchTerms);
+            logDebug(`Search terms: ${searchTerms.join(', ')}`);
 
             // Get the active file if any
             const activeFile = this.app.workspace.getActiveFile();
@@ -361,15 +395,20 @@ export class AIChatView extends ItemView {
                 similarity: 0.5,
                 limit: this.settings.chatSettings.maxNotesToSearch || 5,
                 searchTerms,
-                file // Pass the active file for recency context
+                file, // Pass the active file for recency context
+                app: this.app // Pass the app instance for better file access
             });
 
-            console.log('Vector search results:', results.map(r => ({
-                path: r.path,
-                score: r.score,
-                recencyScore: r.recencyScore,
-                titleScore: r.titleScore
-            })));
+            logDebug('Vector search results: ' +
+                results.map(r => ({
+                    path: r.path,
+                    score: r.score.toFixed(3),
+                    recencyScore: r.recencyScore?.toFixed(3) || '0',
+                    titleScore: r.titleScore?.toFixed(3) || '0'
+                }))
+                .map(r => `${r.path} (${r.score})`)
+                .join(', ')
+            );
 
             // Process results
             const relevantNotes: NoteWithContent[] = [];
@@ -377,14 +416,14 @@ export class AIChatView extends ItemView {
 
             for (const result of results) {
                 if (processedPaths.has(result.path)) {
-                    console.log('Skipping duplicate path:', result.path);
+                    logDebug(`Skipping duplicate path: ${result.path}`);
                     continue;
                 }
                 processedPaths.add(result.path);
 
                 const file = this.app.vault.getAbstractFileByPath(result.path) as TFile;
                 if (!file || !(file instanceof TFile)) {
-                    console.log('Invalid file at path:', result.path);
+                    logDebug(`Invalid file at path: ${result.path}`);
                     continue;
                 }
 
@@ -393,15 +432,7 @@ export class AIChatView extends ItemView {
                     const mtime = file.stat.mtime;
                     const lastModified = new Date(mtime).toLocaleString();
 
-                    console.log('Found relevant note:', {
-                        path: file.path,
-                        score: result.score,
-                        recencyScore: result.recencyScore,
-                        titleScore: result.titleScore,
-                        lastModified,
-                        chunkIndex: result.chunkIndex,
-                        contentLength: content.length
-                    });
+                    logDebug(`Found relevant note: ${file.path} (score: ${result.score.toFixed(3)}, modified: ${lastModified})`);
 
                     relevantNotes.push({
                         file,
@@ -410,14 +441,14 @@ export class AIChatView extends ItemView {
                         chunkIndex: result.chunkIndex
                     });
                 } catch (error) {
-                    console.error(`Error reading file ${file.path}:`, error);
+                    logError(`Error reading file ${file.path}`, error);
                 }
             }
 
-            console.log('Final relevant notes count:', relevantNotes.length);
+            logDebug(`Final relevant notes count: ${relevantNotes.length}`);
             return relevantNotes;
         } catch (error) {
-            console.error('Error finding relevant notes:', error);
+            logError('Error finding relevant notes', error);
             return [];
         }
     }
@@ -425,6 +456,11 @@ export class AIChatView extends ItemView {
     async generateResponse(userQuery: string): Promise<string> {
         // Create context from relevant notes
         const context = this.contextManager.buildContext(userQuery, this.relevantNotes, this.messages);
+
+        // If embeddings are not initialized yet
+        if (!isGloballyInitialized && globalInitializationPromise) {
+            return "I'm still initializing my search capabilities. I'll be able to search through your notes shortly. Feel free to ask your question again in a moment.";
+        }
 
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
@@ -464,6 +500,24 @@ If you're not sure about something, say so clearly.`;
         // Add welcome message
         this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
     }
+
+    // This method is kept for backward compatibility
+    async initializeVectorSearch() {
+        if (isGloballyInitialized) {
+            this.isInitialized = true;
+            return;
+        }
+
+        if (globalInitializationPromise) {
+            await globalInitializationPromise;
+            this.isInitialized = true;
+            return;
+        }
+
+        // Start initialization
+        await initializeEmbeddingSystem(this.settings, this.app);
+        this.isInitialized = true;
+    }
 }
 
 // Vector Search Components
@@ -483,7 +537,7 @@ class EmbeddingStore {
 
     async initialize() {
         try {
-            console.log('Initializing EmbeddingStore');
+            logDebug('Initializing EmbeddingStore');
             // Initialize the embedding model based on settings
             const provider = this.settings.embeddingSettings.provider;
 
@@ -495,7 +549,7 @@ class EmbeddingStore {
                         return new Float32Array(this.dimensions).fill(0).map(() => Math.random());
                     }
                 };
-                console.log(`Using mock embeddings with ${this.dimensions} dimensions`);
+                logDebug(`Using mock embeddings with ${this.dimensions} dimensions`);
             } else if (provider === 'openai') {
                 // Use OpenAI embeddings
                 this.embeddingModel = {
@@ -503,7 +557,7 @@ class EmbeddingStore {
                         return await this.generateOpenAIEmbedding(text);
                     }
                 };
-                console.log('Using OpenAI embeddings');
+                logDebug('Using OpenAI embeddings');
             } else if (provider === 'local') {
                 // Use local embeddings
                 this.embeddingModel = {
@@ -511,11 +565,11 @@ class EmbeddingStore {
                         return await this.generateLocalEmbedding(text);
                     }
                 };
-                console.log('Using local embeddings');
+                logDebug('Using local embeddings');
             }
-            console.log('EmbeddingStore initialized successfully');
+            logDebug('EmbeddingStore initialized successfully');
         } catch (error) {
-            console.error('Error initializing EmbeddingStore:', error);
+            logError('Error initializing EmbeddingStore', error);
             throw error;
         }
     }
@@ -555,7 +609,7 @@ class EmbeddingStore {
 
                 // Validate dimensionality
                 if (embedding.length !== this.dimensions) {
-                    console.warn(`Warning: OpenAI embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
+                    logError(`OpenAI embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
                     // Update the dimensions setting to match the actual embedding
                     this.dimensions = embedding.length;
                     this.settings.embeddingSettings.dimensions = embedding.length;
@@ -566,7 +620,7 @@ class EmbeddingStore {
                 throw new Error('Invalid response format from OpenAI embeddings API');
             }
         } catch (error) {
-            console.error('Error generating OpenAI embedding:', error);
+            logError('Error generating OpenAI embedding', error);
             // Fallback to mock embeddings with configured dimensions
             return new Float32Array(this.dimensions).fill(0).map(() => Math.random());
         }
@@ -610,7 +664,7 @@ class EmbeddingStore {
 
                 // Validate dimensionality
                 if (embedding.length !== this.dimensions) {
-                    console.warn(`Warning: Local embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
+                    logError(`Local embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
                     // Update the dimensions setting to match the actual embedding
                     this.dimensions = embedding.length;
                     this.settings.embeddingSettings.dimensions = embedding.length;
@@ -621,7 +675,7 @@ class EmbeddingStore {
                 throw new Error('Invalid response format from local embeddings API');
             }
         } catch (error) {
-            console.error('Error generating local embedding:', error);
+            logError('Error generating local embedding', error);
             // Fallback to mock embeddings with configured dimensions
             return new Float32Array(this.dimensions).fill(0).map(() => Math.random());
         }
@@ -629,14 +683,26 @@ class EmbeddingStore {
 
     async addNote(file: TFile, content: string) {
         try {
-            console.log(`Processing note for embeddings: ${file.path}`);
+            logDebug(`Processing note for embeddings: ${file.path}`);
+
+            // Handle empty or very short content gracefully
+            if (!this.isValidContent(file.path, content)) {
+                return;
+            }
+
             const chunks = this.chunkContent(content);
-            console.log(`Created ${chunks.length} chunks for ${file.path}`);
+            logDebug(`Created ${chunks.length} chunks for ${file.path}`);
+
+            // If no chunks were created, skip this file
+            if (chunks.length === 0) {
+                logDebug(`No chunks created for ${file.path}. Skipping.`);
+                return;
+            }
 
             const embeddings = await Promise.all(
                 chunks.map(async (chunk, index) => {
                     const embedding = await this.generateEmbedding(chunk.content);
-                    console.log(`Generated embedding for chunk ${index + 1}/${chunks.length} of ${file.path}`);
+                    logDebug(`Generated embedding for chunk ${index + 1}/${chunks.length} of ${file.path}`);
                     return embedding;
                 })
             );
@@ -653,9 +719,9 @@ class EmbeddingStore {
             // Store in both EmbeddingStore and VectorStore
             this.embeddings.set(file.path, noteEmbedding);
             this.vectorStore.addEmbedding(file.path, noteEmbedding);
-            console.log(`Successfully added embeddings for ${file.path}`);
+            logDebug(`Successfully added embeddings for ${file.path}`);
         } catch (error) {
-            console.error(`Error adding note ${file.path}:`, error);
+            logError(`Error adding note ${file.path}`, error);
             throw error;
         }
     }
@@ -663,17 +729,17 @@ class EmbeddingStore {
     async generateEmbedding(text: string): Promise<Float32Array> {
         try {
             if (!this.embeddingModel) {
-                console.error('Embedding model not initialized');
+                logError('Embedding model not initialized');
                 throw new Error('Embedding model not initialized');
             }
             const embedding = await this.embeddingModel.embed(text);
             if (!embedding || !(embedding instanceof Float32Array)) {
-                console.error('Invalid embedding generated:', embedding);
+                logError(`Invalid embedding generated: ${typeof embedding}`);
                 throw new Error('Invalid embedding generated');
             }
             return embedding;
         } catch (error) {
-            console.error('Error generating embedding:', error);
+            logError('Error generating embedding', error);
             throw error;
         }
     }
@@ -823,6 +889,18 @@ class EmbeddingStore {
 
     removeNote(path: string) {
         this.embeddings.delete(path);
+        // Also remove from the vector store
+        this.vectorStore.removeEmbedding(path);
+        logDebug(`Removed embeddings for ${path}`);
+    }
+
+    // Helper method to validate note content before processing
+    private isValidContent(path: string, content: string): boolean {
+        if (!content || content.trim().length < 50) {
+            logDebug(`File ${path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
+            return false;
+        }
+        return true;
     }
 }
 
@@ -830,9 +908,15 @@ class VectorStore {
     private embeddings: Map<string, NoteEmbedding> = new Map();
     private dimensions: number;
     private index: Map<string, { chunks: NoteChunk[], maxScore: number }> = new Map();
+    private app: App | null = null;
 
-    constructor(dimensions: number) {
+    constructor(dimensions: number, app?: App) {
         this.dimensions = dimensions;
+        this.app = app || null;
+    }
+
+    setApp(app: App) {
+        this.app = app;
     }
 
     // Helper method to calculate recency score
@@ -853,6 +937,7 @@ class VectorStore {
         limit: number;
         searchTerms?: string[];
         file?: TFile;
+        app?: App;
     }): Promise<{
         path: string;
         score: number;
@@ -861,7 +946,7 @@ class VectorStore {
         recencyScore?: number;
     }[]> {
         if (this.embeddings.size === 0) {
-            console.warn('No embeddings found in vector store');
+            logError('No embeddings found in vector store');
             return [];
         }
 
@@ -878,6 +963,9 @@ class VectorStore {
         const limit = options.limit || 5;
         const searchTerms = options.searchTerms || [];
 
+        // Use the app from options or this.app
+        const app = options.app || this.app;
+
         for (const [path, noteEmbedding] of this.embeddings.entries()) {
             let maxSimilarity = 0;
             let bestChunkIndex = -1;
@@ -892,8 +980,18 @@ class VectorStore {
             }, 0);
 
             // Calculate recency score if we have access to the file
-            const file = options.file?.vault.getAbstractFileByPath(path);
-            const recencyScore = file instanceof TFile ? this.calculateRecencyScore(file.stat.mtime) : 0;
+            let recencyScore = 0;
+            if (app) {
+                const file = app.vault.getAbstractFileByPath(path);
+                if (file instanceof TFile) {
+                    recencyScore = this.calculateRecencyScore(file.stat.mtime);
+                }
+            } else if (options.file) {
+                // Fallback to the specified file if its path matches
+                if (options.file.path === path) {
+                    recencyScore = this.calculateRecencyScore(options.file.stat.mtime);
+                }
+            }
 
             // Track the best matching chunks for this note
             const noteChunks: { similarity: number; index: number; isHeader: boolean }[] = [];
@@ -955,12 +1053,11 @@ class VectorStore {
             .slice(0, limit)
             .map(({ baseScore, ...rest }) => rest); // Remove baseScore from final results
 
-        console.log('Search results with scores:', sortedResults.map(r => ({
-            path: r.path,
-            total: r.score.toFixed(3),
-            title: r.titleScore?.toFixed(3) || '0',
-            recency: r.recencyScore?.toFixed(3) || '0'
-        })));
+        logDebug(`Search results with scores: ${
+            sortedResults.map(r =>
+                `${r.path.split('/').pop()} (${r.score.toFixed(2)})`
+            ).join(', ')
+        }`);
 
         return sortedResults;
     }
@@ -968,7 +1065,7 @@ class VectorStore {
     private calculateCosineSimilarity(a: Float32Array, b: Float32Array): number {
         // Ensure both vectors have the same dimensionality
         if (a.length !== b.length) {
-            console.error(`Error: Cannot calculate similarity between vectors of different dimensions (${a.length} vs ${b.length})`);
+            logError(`Cannot calculate similarity between vectors of different dimensions (${a.length} vs ${b.length})`);
             return 0;
         }
 
@@ -993,26 +1090,26 @@ class VectorStore {
     addEmbedding(path: string, embedding: NoteEmbedding) {
         // Validate the embedding before adding
         if (!embedding || !embedding.chunks || embedding.chunks.length === 0) {
-            console.error(`Invalid embedding for path: ${path}`);
+            logDebug(`Skipping embedding for path: ${path} - No chunks available`);
             return;
         }
 
         // Validate all chunks have the correct dimensionality
         const validChunks = embedding.chunks.every(chunk => {
             if (!chunk.embedding || chunk.embedding.length !== this.dimensions) {
-                console.warn(`Warning: Invalid chunk embedding in ${path}. Expected ${this.dimensions} dimensions, got ${chunk.embedding?.length || 0}`);
+                logError(`Invalid chunk embedding in ${path}. Expected ${this.dimensions} dimensions, got ${chunk.embedding?.length || 0}`);
                 return false;
             }
             return true;
         });
 
         if (!validChunks) {
-            console.error(`Skipping invalid embedding for path: ${path}`);
+            logDebug(`Skipping invalid embedding for path: ${path} - Dimension mismatch`);
             return;
         }
 
         this.embeddings.set(path, embedding);
-        console.log(`Added embedding for ${path} with ${embedding.chunks.length} chunks`);
+        logDebug(`Added embedding for ${path} with ${embedding.chunks.length} chunks`);
 
         // Initialize index entry
         this.index.set(path, {
@@ -1267,8 +1364,90 @@ class LLMConnector {
                 throw new Error('Invalid response format from API');
             }
         } catch (error) {
-            console.error('Error in API request:', error);
+            logError('Error in API request', error);
             throw error;
         }
     }
+}
+
+// Function to initialize the embedding system directly without requiring a view
+export async function initializeEmbeddingSystem(settings: Settings, app: App): Promise<void> {
+    // If already initialized or initializing, don't start again
+    if (isGloballyInitialized || globalInitializationPromise) {
+        return;
+    }
+
+    // Create global instances if they don't exist yet
+    if (!globalVectorStore) {
+        globalVectorStore = new VectorStore(settings.embeddingSettings.dimensions, app);
+    } else {
+        // Ensure the app is set on the existing vector store
+        globalVectorStore.setApp(app);
+    }
+
+    if (!globalEmbeddingStore) {
+        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore);
+    }
+
+    // Start the initialization process asynchronously
+    globalInitializationPromise = (async () => {
+        try {
+            await globalEmbeddingStore.initialize();
+
+            // Index all markdown files
+            const files = app.vault.getMarkdownFiles();
+            logDebug(`Starting to index ${files.length} notes for vector search`);
+
+            if (files.length === 0) {
+                logError("No markdown files found in the vault. This is unexpected.");
+
+                // Add a more detailed log to help diagnose the issue
+                try {
+                    const allFiles = app.vault.getAllLoadedFiles();
+                    logDebug(`Total files in vault: ${allFiles.length}`);
+                    if (allFiles.length > 0) {
+                        logDebug(`Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
+                    }
+                } catch (e) {
+                    logError("Error inspecting vault files", e);
+                }
+            }
+
+            for (const file of files) {
+                try {
+                    logDebug(`Processing file: ${file.path}`);
+                    const content = await app.vault.cachedRead(file);
+                    await globalEmbeddingStore.addNote(file, content);
+
+                    // Add notification during initial indexing if debug mode is enabled
+                    if (settings.debugMode) {
+                        new Notice(`Indexed: ${file.path}`, 2000);
+                    }
+                } catch (error) {
+                    logError(`Error indexing note ${file.path}`, error);
+                }
+            }
+
+            logDebug(`Indexed ${files.length} notes for vector search`);
+            isGloballyInitialized = true;
+
+            // Dispatch a custom event that the plugin can listen for
+            // to trigger processing of any pending file updates
+            logDebug("Embedding initialization complete");
+
+            // Create custom event with payload indicating this is initial indexing
+            const event = new CustomEvent('ai-helper-indexing-complete', {
+                detail: { isInitialIndexing: true }
+            });
+            document.dispatchEvent(event);
+            logDebug("Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
+
+        } catch (error) {
+            logError('Error initializing vector search', error);
+            // Use console error instead of Notice to avoid UI blocking
+            logError('Error initializing vector search. Some features may not work correctly.');
+        }
+    })();
+
+    return globalInitializationPromise;
 }

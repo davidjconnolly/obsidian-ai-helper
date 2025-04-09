@@ -41,6 +41,7 @@ export interface Settings {
   openChatOnStartup: boolean;
   debugMode: boolean;
   apiChoice: 'local' | 'openai';
+  fileUpdateFrequency: number; // Time in seconds before reindexing modified files
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -74,7 +75,8 @@ export const DEFAULT_SETTINGS: Settings = {
     includeTaskItems: true,
   },
   openChatOnStartup: false,
-  debugMode: false
+  debugMode: true,
+  fileUpdateFrequency: 30 // Default to 30 seconds
 };
 
 export class SettingsTab extends PluginSettingTab {
@@ -309,5 +311,32 @@ export class SettingsTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    // File Indexing Settings
+    containerEl.createEl('h3', { text: 'File Indexing' });
+
+    new Setting(containerEl)
+      .setName('File update frequency')
+      .setDesc('How long to wait after a file is modified before reindexing it (in seconds). Lower values update more frequently but may impact performance.')
+      .addSlider(slider => {
+        slider
+          .setLimits(5, 300, 5)
+          .setValue(this.plugin.settings.fileUpdateFrequency)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.fileUpdateFrequency = value;
+            await this.plugin.saveSettings();
+          });
+      })
+      .addExtraButton(button => {
+        button
+          .setIcon('reset')
+          .setTooltip('Reset to default (30 seconds)')
+          .onClick(async () => {
+            this.plugin.settings.fileUpdateFrequency = 30;
+            await this.plugin.saveSettings();
+            this.display();
+          });
+      });
   }
 }

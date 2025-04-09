@@ -3,15 +3,7 @@ import { AI_CHAT_VIEW_TYPE, AIChatView, openAIChat, initializeEmbeddingSystem, g
 import { DEFAULT_SETTINGS, Settings, AIHelperSettingTab } from './settings';
 import { summarizeSelection } from './summarize';
 import { TFile } from 'obsidian';
-
-// Helper function for consistent logging
-function logDebug(message: string) {
-	console.log(`plugin:ai-helper: ${message}`);
-}
-
-function logError(message: string, error?: any) {
-	console.error(`plugin:ai-helper: ${message}`, error || '');
-}
+import { logDebug, logError } from './utils';
 
 // Custom debounce implementation with flush method
 function createDebounce<T extends (...args: any[]) => any>(
@@ -112,7 +104,7 @@ export default class AIHelperPlugin extends Plugin {
 			id: 'process-pending-updates',
 			name: 'Process pending file updates',
 			callback: () => {
-				logDebug('Manually processing pending file updates');
+				logDebug(this.settings, 'Manually processing pending file updates');
 				this.processPendingFileUpdates.flush();
 				new Notice('Processing pending file updates');
 			}
@@ -144,7 +136,7 @@ export default class AIHelperPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('create', (file) => {
 				if (file instanceof TFile && file.extension === 'md') {
-					logDebug(`New markdown file created: ${file.path}. Will add to index.`);
+					logDebug(this.settings, `New markdown file created: ${file.path}. Will add to index.`);
 					this.reindexFile(file);
 				}
 			})
@@ -154,7 +146,7 @@ export default class AIHelperPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
 				if (file instanceof TFile && file.extension === 'md') {
-					logDebug(`Markdown file deleted: ${file.path}. Removing from index.`);
+					logDebug(this.settings, `Markdown file deleted: ${file.path}. Removing from index.`);
 					this.removeFileFromIndex(file.path);
 					this.modifiedFiles.delete(file.path); // Clean up from modified files tracking
 				}
@@ -165,7 +157,7 @@ export default class AIHelperPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on('rename', (file, oldPath) => {
 				if (file instanceof TFile && file.extension === 'md') {
-					logDebug(`Markdown file renamed from ${oldPath} to ${file.path}. Updating index.`);
+					logDebug(this.settings, `Markdown file renamed from ${oldPath} to ${file.path}. Updating index.`);
 					this.removeFileFromIndex(oldPath);
 					this.reindexFile(file);
 
@@ -185,21 +177,21 @@ export default class AIHelperPlugin extends Plugin {
 				if (file instanceof TFile && file.extension === 'md') {
 					// Track the modification time
 					const now = Date.now();
-					logDebug(`File modified: ${file.path} at ${new Date(now).toLocaleTimeString()}`);
+					logDebug(this.settings, `File modified: ${file.path} at ${new Date(now).toLocaleTimeString()}`);
 
 					// Check if this is a new modification or an update to an existing one
 					const wasAlreadyModified = this.modifiedFiles.has(file.path);
 					this.modifiedFiles.set(file.path, now);
 
 					if (wasAlreadyModified) {
-						logDebug(`Updated timestamp for already modified file: ${file.path}`);
+						logDebug(this.settings, `Updated timestamp for already modified file: ${file.path}`);
 					} else {
-						logDebug(`Added new file to modification queue: ${file.path}`);
+						logDebug(this.settings, `Added new file to modification queue: ${file.path}`);
 					}
 
 					// Trigger the debounced update function
 					this.processPendingFileUpdates();
-					logDebug(`Debounced update triggered, will process after ${this.settings.fileUpdateFrequency/2} seconds of inactivity`);
+					logDebug(this.settings, `Debounced update triggered, will process after ${this.settings.fileUpdateFrequency/2} seconds of inactivity`);
 				}
 			})
 		);
@@ -207,24 +199,24 @@ export default class AIHelperPlugin extends Plugin {
 		// Set up periodic checking for modified files
 		// The interval will be twice the user-defined file update frequency
 		const checkInterval = this.getPeriodicCheckInterval();
-		logDebug(`Setting up periodic check interval: ${checkInterval}ms`);
+		logDebug(this.settings, `Setting up periodic check interval: ${checkInterval}ms`);
 
 		this.registerInterval(
 			window.setInterval(() => {
 				// This ensures any files that weren't updated due to debounce are eventually processed
-				logDebug(`Periodic check running at ${new Date().toLocaleTimeString()}`);
+				logDebug(this.settings, `Periodic check running at ${new Date().toLocaleTimeString()}`);
 
 				// Skip processing during initial indexing
 				if (this.isInitialIndexingInProgress()) {
-					logDebug('Initial indexing still in progress, skipping periodic check');
+					logDebug(this.settings, 'Initial indexing still in progress, skipping periodic check');
 					return;
 				}
 
 				if (this.modifiedFiles.size > 0) {
-					logDebug(`Found ${this.modifiedFiles.size} modified files in queue, processing now`);
+					logDebug(this.settings, `Found ${this.modifiedFiles.size} modified files in queue, processing now`);
 					this.processPendingFileUpdates.flush();
 				} else {
-					logDebug('No modified files in queue');
+					logDebug(this.settings, 'No modified files in queue');
 				}
 			}, checkInterval)
 		);
@@ -234,29 +226,29 @@ export default class AIHelperPlugin extends Plugin {
 		setTimeout(() => {
 			// Start embedding initialization directly without creating a view
 			// This happens asynchronously and won't block the UI
-			logDebug("Starting delayed embedding initialization...");
+			logDebug(this.settings, "Starting delayed embedding initialization...");
 			initializeEmbeddingSystem(this.settings, this.app);
 		}, 2000); // 2 second delay
 
 		// Listen for completion of indexing to process any pending updates
 		this.indexingCompleteListener = (e: CustomEvent) => {
-			logDebug("Received indexing complete event, checking for modified files");
+			logDebug(this.settings, "Received indexing complete event, checking for modified files");
 
 			// Check if this is the first indexing after startup
 			const isInitialIndexing = e.detail?.isInitialIndexing === true;
 
 			// For initial indexing, clear all modified files to prevent reindexing what was just indexed
 			if (isInitialIndexing) {
-				logDebug(`This is the initial indexing. Clearing ${this.modifiedFiles.size} modified files to prevent duplicate indexing.`);
+				logDebug(this.settings, `This is the initial indexing. Clearing ${this.modifiedFiles.size} modified files to prevent duplicate indexing.`);
 				this.modifiedFiles.clear(); // Clear all modified files
 			}
 			// Only process files if this is not the initial indexing
 			else if (this.modifiedFiles.size > 0) {
-				logDebug(`Processing ${this.modifiedFiles.size} files that were explicitly modified during initialization`);
+				logDebug(this.settings, `Processing ${this.modifiedFiles.size} files that were explicitly modified during initialization`);
 				// Process only files that are actually in the queue, don't trigger a full reindex
 				this.processPendingFileUpdates.flush();
 			} else {
-				logDebug("No files were modified during initialization, nothing to process");
+				logDebug(this.settings, "No files were modified during initialization, nothing to process");
 			}
 		};
 		document.addEventListener('ai-helper-indexing-complete', this.indexingCompleteListener);
@@ -315,33 +307,33 @@ export default class AIHelperPlugin extends Plugin {
 	// Helper method to reindex a file
 	private async reindexFile(file: TFile) {
 		if (!globalEmbeddingStore) {
-			logDebug(`Embedding store not yet initialized, queueing ${file.path} for later reindexing`);
+			logDebug(this.settings, `Embedding store not yet initialized, queueing ${file.path} for later reindexing`);
 			// Queue it for later when embedding store is ready
 			this.modifiedFiles.set(file.path, Date.now());
 			return;
 		}
 
 		try {
-			logDebug(`Starting to reindex file: ${file.path}`);
+			logDebug(this.settings, `Starting to reindex file: ${file.path}`);
 			const content = await this.app.vault.cachedRead(file);
 
 			// Skip empty or very short files
 			if (!content || content.trim().length < 50) {
-				logDebug(`File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
+				logDebug(this.settings, `File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
 				return;
 			}
 
 			// Remove the old embedding first to ensure it's fully updated
 			try {
-				logDebug(`Removing old embedding for ${file.path} before reindexing`);
+				logDebug(this.settings, `Removing old embedding for ${file.path} before reindexing`);
 				globalEmbeddingStore.removeNote(file.path);
 			} catch (e) {
-				logDebug(`No existing embedding found for ${file.path}, creating new one`);
+				logDebug(this.settings, `No existing embedding found for ${file.path}, creating new one`);
 			}
 
 			// Add the new embedding
 			await globalEmbeddingStore.addNote(file, content);
-			logDebug(`Successfully reindexed file: ${file.path}`);
+			logDebug(this.settings, `Successfully reindexed file: ${file.path}`);
 
 			// Show a notification if debug mode is enabled
 			if (this.settings.debugMode) {
@@ -365,7 +357,7 @@ export default class AIHelperPlugin extends Plugin {
 
 		// Get all markdown files
 		const files = this.app.vault.getMarkdownFiles();
-		logDebug(`Found ${files.length} markdown files to index`);
+		logDebug(this.settings, `Found ${files.length} markdown files to index`);
 
 		if (files.length === 0) {
 			new Notice('No markdown files found in your vault.');
@@ -386,7 +378,7 @@ export default class AIHelperPlugin extends Plugin {
 
 					// Skip empty or very short files
 					if (!content || content.trim().length < 50) {
-						logDebug(`File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
+						logDebug(this.settings, `File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
 						processedCount++;
 						return;
 					}
@@ -422,13 +414,13 @@ export default class AIHelperPlugin extends Plugin {
 	// Helper method to remove a file from the index
 	private async removeFileFromIndex(filePath: string) {
 		if (!globalEmbeddingStore) {
-			logDebug("Embedding store not yet initialized, skipping removal");
+			logDebug(this.settings, "Embedding store not yet initialized, skipping removal");
 			return;
 		}
 
 		try {
 			globalEmbeddingStore.removeNote(filePath);
-			logDebug(`Successfully removed ${filePath} from index`);
+			logDebug(this.settings, `Successfully removed ${filePath} from index`);
 		} catch (error) {
 			logError(`Error removing file ${filePath} from index`, error);
 		}
@@ -444,8 +436,8 @@ export default class AIHelperPlugin extends Plugin {
 			const now = Date.now();
 			const filesToUpdate: string[] = [];
 
-			logDebug(`Checking for files to update at ${new Date().toLocaleTimeString()}`);
-			logDebug(`Current modified files queue: ${this.modifiedFiles.size} files`);
+			logDebug(this.settings, `Checking for files to update at ${new Date().toLocaleTimeString()}`);
+			logDebug(this.settings, `Current modified files queue: ${this.modifiedFiles.size} files`);
 
 			// Check if this is directly after initialization to prevent duplicate indexing
 			if (this.modifiedFiles.size > 0) {
@@ -456,7 +448,7 @@ export default class AIHelperPlugin extends Plugin {
 					const ageMs = now - timestamp;
 					const shouldUpdate = true; // Always update modified files
 
-					logDebug(`File ${path} modified ${Math.round(ageMs/1000)}s ago, should update: ${shouldUpdate}`);
+					logDebug(this.settings, `File ${path} modified ${Math.round(ageMs/1000)}s ago, should update: ${shouldUpdate}`);
 
 					if (shouldUpdate) {
 						filesToUpdate.push(path);
@@ -465,7 +457,7 @@ export default class AIHelperPlugin extends Plugin {
 
 				// Process files that qualify for update
 				if (filesToUpdate.length > 0) {
-					logDebug(`Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
+					logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
 
 					filesToUpdate.forEach(path => {
 						// Remove from tracking
@@ -480,10 +472,10 @@ export default class AIHelperPlugin extends Plugin {
 						}
 					});
 				} else {
-					logDebug('No files need updating at this time');
+					logDebug(this.settings, 'No files need updating at this time');
 				}
 			} else {
-				logDebug('No modified files in queue');
+				logDebug(this.settings, 'No modified files in queue');
 			}
 		}, this.settings.fileUpdateFrequency * 1000 / 2, false); // Wait for half the update frequency
 

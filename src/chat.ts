@@ -1,12 +1,11 @@
-import { App, Notice, TFile, MarkdownView, ButtonComponent, MarkdownRenderer, ItemView, WorkspaceLeaf, RequestUrlParam, requestUrl } from 'obsidian';
+import { App, Notice, TFile, MarkdownView, ButtonComponent, MarkdownRenderer, requestUrl, RequestUrlParam } from 'obsidian';
+import { ItemView, WorkspaceLeaf } from 'obsidian';
 import { Settings } from './settings';
-import AIHelperPlugin from './main';
 import { logDebug, logError } from './utils';
-import { ChatMessage, NoteWithContent, NoteEmbedding, EmbeddingModel, NoteChunk } from './types';
-import { VectorStore } from './vector/vectorStore';
-import { EmbeddingStore } from './vector/embeddingStore';
-import { ContextManager } from './chat/contextManager';
-import { LLMConnector } from './chat/llmConnector';
+
+interface EmbeddingModel {
+    embed: (text: string) => Promise<Float32Array>;
+}
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
@@ -48,17 +47,6 @@ interface NoteEmbedding {
     path: string;
     chunks: NoteChunk[];
 }
-
-// Example note for context (fallback)
-const EXAMPLE_NOTE = {
-    title: "Example Note",
-    path: "Personal/Example Note.md",
-    content: "This is an example note that demonstrates the chat functionality.\n\n" +
-            "It contains some sample content about note-taking and organization.\n\n" +
-            "- Use markdown for organization\n" +
-            "- Keep notes concise and clear\n" +
-            "- Regular reviews help maintain knowledge"
-};
 
 // Open AI Chat sidebar view
 export function openAIChat(app: App): void {
@@ -105,12 +93,16 @@ export class AIChatView extends ItemView {
         // Use global instances if they exist, otherwise create new ones
         this.vectorStore = globalVectorStore || new VectorStore(settings.embeddingSettings.dimensions, settings, this.app);
         this.embeddingStore = globalEmbeddingStore || new EmbeddingStore(settings, this.vectorStore);
-        this.contextManager = new ContextManager(this.vectorStore);
-        this.llmConnector = new LLMConnector(settings);
 
         // If we created new instances, store them globally
         if (!globalVectorStore) globalVectorStore = this.vectorStore;
         if (!globalEmbeddingStore) globalEmbeddingStore = this.embeddingStore;
+
+        // Always ensure the app is set on the vector store
+        this.vectorStore.setApp(this.app);
+
+        this.contextManager = new ContextManager(this.vectorStore);
+        this.llmConnector = new LLMConnector(settings);
     }
 
     getViewType(): string {
@@ -384,11 +376,11 @@ export class AIChatView extends ItemView {
 
     async findRelevantNotes(query: string): Promise<NoteWithContent[]> {
         try {
-            console.log('Starting search for query:', query);
+            logDebug(this.settings, `Starting search for query: ${query}`);
 
             // Generate embedding for the query
             const queryEmbedding = await this.embeddingStore.generateEmbedding(query);
-            console.log('Generated query embedding');
+            logDebug(this.settings, 'Generated query embedding');
 
             // Extract key terms for title matching
             const searchTerms = query
@@ -396,7 +388,7 @@ export class AIChatView extends ItemView {
                 .split(/\s+/)
                 .filter(term => term.length > 3)
                 .map(term => term.replace(/[^\w\s]/g, ''));
-            console.log('Search terms:', searchTerms);
+            logDebug(this.settings, `Search terms: ${JSON.stringify(searchTerms)}`);
 
             // Get the active file if any
             const activeFile = this.app.workspace.getActiveFile();
@@ -410,12 +402,12 @@ export class AIChatView extends ItemView {
                 file // Pass the active file for recency context
             });
 
-            console.log('Vector search results:', results.map(r => ({
+            logDebug(this.settings, `Vector search results: ${JSON.stringify(results.map(r => ({
                 path: r.path,
                 score: r.score,
                 recencyScore: r.recencyScore,
                 titleScore: r.titleScore
-            })));
+            })))}`);
 
             // Process results
             const relevantNotes: NoteWithContent[] = [];
@@ -423,14 +415,14 @@ export class AIChatView extends ItemView {
 
             for (const result of results) {
                 if (processedPaths.has(result.path)) {
-                    console.log('Skipping duplicate path:', result.path);
+                    logDebug(this.settings, `Skipping duplicate path: ${result.path}`);
                     continue;
                 }
                 processedPaths.add(result.path);
 
                 const file = this.app.vault.getAbstractFileByPath(result.path) as TFile;
                 if (!file || !(file instanceof TFile)) {
-                    console.log('Invalid file at path:', result.path);
+                    logDebug(this.settings, `Invalid file at path: ${result.path}`);
                     continue;
                 }
 
@@ -439,7 +431,7 @@ export class AIChatView extends ItemView {
                     const mtime = file.stat.mtime;
                     const lastModified = new Date(mtime).toLocaleString();
 
-                    console.log('Found relevant note:', {
+                    logDebug(this.settings, `Found relevant note: ${JSON.stringify({
                         path: file.path,
                         score: result.score,
                         recencyScore: result.recencyScore,
@@ -447,7 +439,7 @@ export class AIChatView extends ItemView {
                         lastModified,
                         chunkIndex: result.chunkIndex,
                         contentLength: content.length
-                    });
+                    })}`);
 
                     relevantNotes.push({
                         file,
@@ -460,7 +452,7 @@ export class AIChatView extends ItemView {
                 }
             }
 
-            console.log('Final relevant notes count:', relevantNotes.length);
+            logDebug(this.settings, `Final relevant notes count: ${relevantNotes.length}`);
             return relevantNotes;
         } catch (error) {
             console.error('Error finding relevant notes:', error);
@@ -497,9 +489,9 @@ If you're not sure about something, say so clearly.`;
             { role: 'user', content: userQuery }
         ];
 
-        console.log('*****************');
-        console.log(messages)
-        console.log('*****************');
+        logDebug(this.settings, '*****************');
+        logDebug(this.settings, `Messages: ${JSON.stringify(messages)}`);
+        logDebug(this.settings, '*****************');
 
         // Send to LLM for processing
         const response = await this.llmConnector.generateResponse(messages);
@@ -1048,12 +1040,12 @@ class VectorStore {
             .slice(0, limit)
             .map(({ baseScore, ...rest }) => rest); // Remove baseScore from final results
 
-        console.log('Search results with scores:', sortedResults.map(r => ({
+        logDebug(this.settings, `Search results with scores: ${JSON.stringify(sortedResults.map(r => ({
             path: r.path,
             total: r.score.toFixed(3),
             title: r.titleScore?.toFixed(3) || '0',
             recency: r.recencyScore?.toFixed(3) || '0'
-        })));
+        })))}`);
 
         return sortedResults;
     }
@@ -1391,11 +1383,9 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
             let progressNotice: Notice | null = null;
             let progressElement: HTMLElement | null = null;
 
-            if (settings.debugMode) {
-                progressNotice = new Notice('', 0);
-                progressElement = progressNotice.noticeEl.createDiv();
-                progressElement.setText(`Indexing notes: 0/${files.length}`);
-            }
+            progressNotice = new Notice('', 0);
+            progressElement = progressNotice.noticeEl.createDiv();
+            progressElement.setText(`Indexing notes: 0/${files.length}`);
 
             let processedCount = 0;
             for (const file of files) {
@@ -1406,27 +1396,38 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
 
                     // Update progress notification
                     processedCount++;
-                    if (settings.debugMode && progressElement) {
+                    if (progressElement) {
                         progressElement.setText(`Indexing notes: ${processedCount}/${files.length}`);
                     }
                 } catch (error) {
-                    logError(`Error processing file ${file.path}`, error);
+                    logError(`Error indexing note ${file.path}`, error);
                 }
             }
 
             // Show completion notification
-            if (settings.debugMode && progressNotice) {
+            if (progressNotice) {
                 progressNotice.hide(); // Hide the progress notification
                 new Notice(`Indexed ${files.length} notes for vector search`, 3000);
             }
 
+            logDebug(settings, `Indexed ${files.length} notes for vector search`);
             isGloballyInitialized = true;
-            logDebug(settings, 'Vector search initialization complete');
+
+            // Dispatch a custom event that the plugin can listen for
+            // to trigger processing of any pending file updates
+            logDebug(settings, "Embedding initialization complete");
+
+            // Create custom event with payload indicating this is initial indexing
+            const event = new CustomEvent('ai-helper-indexing-complete', {
+                detail: { isInitialIndexing: true }
+            });
+            document.dispatchEvent(event);
+            logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
+
         } catch (error) {
             logError('Error initializing vector search', error);
-            throw error;
-        } finally {
-            globalInitializationPromise = null;
+            // Use console error instead of Notice to avoid UI blocking
+            logError('Error initializing vector search. Some features may not work correctly.');
         }
     })();
 

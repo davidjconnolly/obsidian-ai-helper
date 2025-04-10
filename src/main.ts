@@ -1,8 +1,7 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { AI_CHAT_VIEW_TYPE, AIChatView, openAIChat, initializeEmbeddingSystem, globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat';
+import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { AI_CHAT_VIEW_TYPE, AIHelperChatView, openAIChat, initializeEmbeddingSystem, globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat';
 import { DEFAULT_SETTINGS, Settings, AIHelperSettingTab } from './settings';
 import { summarizeSelection } from './summarize';
-import { TFile } from 'obsidian';
 import { logDebug, logError } from './utils';
 
 // Custom debounce implementation with flush method
@@ -69,7 +68,7 @@ export default class AIHelperPlugin extends Plugin {
 		// Register the AI Chat view
 		this.registerView(
 			AI_CHAT_VIEW_TYPE,
-			(leaf) => new AIChatView(leaf, this.settings)
+			(leaf) => new AIHelperChatView(leaf, this.settings)
 		);
 
 		// Add a command to summarize text

@@ -6,3 +6,338 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+/* Chat Sidebar View Styles */
+.ai-helper-chat-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ai-helper-chat-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.ai-helper-chat-header {
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.ai-helper-chat-header h3 {
+  margin: 0 0 8px 0;
+}
+
+/* Context Section Styles */
+.ai-helper-context-section {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  background-color: var(--background-secondary);
+  max-height: 30%;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.ai-helper-context-header {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-weight: bold;
+  background-color: var(--background-secondary-alt);
+}
+
+.ai-helper-context-notes {
+  padding: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-helper-context-note {
+  padding: 8px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  cursor: pointer;
+  font-size: 0.85em;
+  border: 1px solid transparent;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.ai-helper-context-note:hover {
+  border-color: var(--interactive-accent);
+}
+
+.ai-helper-context-note-title {
+  font-weight: bold;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-helper-context-note-path {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ai-helper-context-note-score {
+  margin-top: 4px;
+  font-size: 0.9em;
+  color: var(--text-accent);
+  font-weight: bold;
+}
+
+/* Selection reasons styling */
+.ai-helper-context-note-reasons {
+  margin-top: 6px;
+  font-size: 0.8em;
+  background-color: var(--background-secondary);
+  border-radius: 4px;
+  padding: 6px;
+  cursor: default;
+}
+
+.ai-helper-context-note-reasons-header {
+  color: var(--text-normal);
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+.ai-helper-context-note-reasons-list {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+}
+
+.ai-helper-context-note-reasons-list li {
+  margin-bottom: 2px;
+}
+
+.ai-helper-chat-messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  border-radius: 4px;
+  background-color: var(--background-primary);
+  margin-bottom: 12px;
+  border: 1px solid var(--background-modifier-border);
+  padding: 8px;
+}
+
+.ai-helper-chat-message {
+  padding: 10px 12px;
+  border-radius: 10px;
+  max-width: 90%;
+  word-break: break-word;
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+
+.ai-helper-chat-message-user {
+  background-color: var(--interactive-accent);
+  color: white;
+  align-self: flex-end;
+  border-bottom-right-radius: 3px;
+}
+
+.theme-dark .ai-helper-chat-message-user {
+  color: white;
+}
+
+.theme-light .ai-helper-chat-message-user {
+  color: white;
+}
+
+.ai-helper-chat-message-assistant {
+  background-color: var(--background-modifier-form-field);
+  align-self: flex-start;
+  border-bottom-left-radius: 3px;
+}
+
+.theme-dark .ai-helper-chat-message-assistant {
+  background-color: var(--interactive-accent-hover);
+  color: white;
+}
+
+/* Markdown preview inside assistant messages */
+.ai-helper-chat-message-assistant .markdown-preview p {
+  margin: 0;
+  padding: 0;
+}
+
+.ai-helper-chat-loading {
+  opacity: 0.7;
+}
+
+.ai-helper-chat-input-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-helper-chat-input {
+  width: 100%;
+  min-height: 40px;
+  max-height: 200px;
+  resize: vertical;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background-color: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ai-helper-chat-input:disabled {
+  background-color: var(--background-modifier-form-field);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* Button styling */
+.ai-helper-chat-view button.mod-cta {
+  align-self: flex-end;
+  padding: 8px 16px;
+}
+
+/* Empty state styling */
+.ai-helper-context-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  padding: 20px;
+  text-align: center;
+  height: 100%;
+  min-height: 60px;
+  background-color: var(--background-primary);
+  border-radius: 4px;
+  margin: 4px;
+  gap: 12px;
+}
+
+.ai-helper-context-empty-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0.7;
+  margin-bottom: 4px;
+}
+
+.ai-helper-context-empty-message {
+  font-size: 1.1em;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.ai-helper-context-empty-suggestion {
+  font-size: 0.9em;
+  opacity: 0.8;
+  font-style: italic;
+}
+
+/* Button container styling */
+.ai-helper-button-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-helper-button-spacer {
+  flex: 1;
+}
+
+.ai-helper-button-container button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.ai-helper-button-container button.ai-helper-reset-button {
+  background-color: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.ai-helper-button-container button.ai-helper-reset-button:hover {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-form-field);
+}
+
+.ai-helper-button-container button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.ai-helper-button-container button.mod-cta:disabled {
+  background-color: var(--interactive-accent);
+}
+
+.ai-helper-button-container button.ai-helper-reset-button:disabled {
+  background-color: var(--background-modifier-form-field);
+}
+
+/* Summary Modal Styles */
+.summary-preview {
+  width: 100%;
+  height: 50vh;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  padding: 10px;
+  white-space: pre-wrap;
+  resize: none;
+}
+
+.ai-helper-summary-button-container {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.ai-helper-context-note-metadata {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 4px 0;
+    font-size: 0.8em;
+    color: var(--text-muted);
+}
+
+.ai-helper-context-note-path {
+    opacity: 0.8;
+}
+
+.ai-helper-context-note-updated {
+    opacity: 0.7;
+    font-style: italic;
+}
+
+.ai-helper-context-note pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}

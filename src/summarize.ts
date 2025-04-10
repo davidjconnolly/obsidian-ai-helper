@@ -1,5 +1,6 @@
 import { App, Editor, Notice, Modal } from 'obsidian';
-import { AIHelperSettings } from './settings';
+import { Settings } from './settings';
+import { logError } from './utils';
 
 export enum ModalAction {
   inline,
@@ -7,26 +8,33 @@ export enum ModalAction {
   copy
 }
 
-export async function summarizeSelection(editor: Editor, app: App, settings: AIHelperSettings) {
+export async function summarizeSelection(editor: Editor, app: App, settings: Settings) {
   const selectedText = editor.getSelection();
-  if (!selectedText) {
-    new Notice('No text selected');
+  const textToSummarize = selectedText.trim() || editor.getValue();
+
+  if (!textToSummarize) {
+    new Notice('No text to summarize');
     return;
   }
 
-  const modal = new AIHelperModal(app, selectedText, settings, async (finalSummary: string, action: ModalAction) => {
+  const modal = new AIHelperModal(app, textToSummarize, settings, async (finalSummary: string, action: ModalAction) => {
     if (action === ModalAction.inline) {
-      editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}\n`);
+      if (selectedText) {
+        editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}`);
+      } else {
+        const currentContent = editor.getValue();
+        editor.setValue(`${currentContent}\n\n**Summary:**\n${finalSummary}`);
+      }
     } else if (action === ModalAction.summarize) {
       const currentContent = editor.getValue();
-      const summarySection = `----\n# Summary\n${finalSummary}\n\n----\n\n`;
-      editor.setValue(summarySection + currentContent);
-      editor.setCursor(editor.offsetToPos(summarySection.length));
+      const summarySection = `# Summary\n\n${finalSummary.trim()}\n\n----`;
+      editor.setValue(`${summarySection}\n\n${currentContent}`);
+      editor.setCursor(editor.offsetToPos(summarySection.length + 2));
     } else if (action === ModalAction.copy) {
       navigator.clipboard.writeText(finalSummary).then(() => {
         new Notice('Summary copied to clipboard');
       }).catch(err => {
-        console.error('Failed to copy text: ', err);
+        logError('Failed to copy text', err);
       });
     } else {
       return;
@@ -38,18 +46,16 @@ export async function summarizeSelection(editor: Editor, app: App, settings: AIH
 class AIHelperModal extends Modal {
   text: string;
   onSubmit: (summary: string, action: ModalAction) => void;
-  settings: AIHelperSettings;
+  settings: Settings;
   summary: string;
-  isStreaming: boolean;
   controller: AbortController;
 
-  constructor(app: App, text: string, settings: AIHelperSettings, onSubmit: (summary: string, action: ModalAction) => void) {
+  constructor(app: App, text: string, settings: Settings, onSubmit: (summary: string, action: ModalAction) => void) {
     super(app);
     this.text = text;
     this.settings = settings;
     this.onSubmit = onSubmit;
     this.summary = '';
-    this.isStreaming = true;
     this.controller = new AbortController();
   }
 
@@ -59,17 +65,15 @@ class AIHelperModal extends Modal {
     contentEl.empty();
 
     const markdownPreview = contentEl.createEl('textarea', {
-      cls: 'markdown-preview',
+      cls: 'summary-preview',
       attr: {
-        style: 'width: 100%; height: 50vh; overflow-y: auto; border: 1px solid #ccc; padding: 10px; white-space: pre-wrap; resize: none;',
         disabled: 'true'
       },
       text: 'Waiting for input...'
     });
 
     const buttonContainer = contentEl.createEl('div', {
-      cls: 'button-container',
-      attr: { style: 'display: flex; justify-content: flex-end; gap: 10px; margin-top: 10px;' }
+      cls: 'ai-helper-summary-button-container'
     });
 
     const inlineButton = buttonContainer.createEl('button', { text: 'Insert inline', cls: 'mod-cta', attr: { disabled: 'true' } });
@@ -97,25 +101,36 @@ class AIHelperModal extends Modal {
 
   async streamSummary(markdownPreview: HTMLTextAreaElement, inlineButton: HTMLButtonElement, summarizeButton: HTMLButtonElement, copyButton: HTMLButtonElement) {
     try {
-      const apiUrl = this.settings.apiChoice === 'openai' ? this.settings.openAI.url : this.settings.localLLM.url;
+      const apiUrl = this.settings.summarizeSettings.provider === 'local'
+        ? this.settings.summarizeSettings.localApiUrl
+        : this.settings.summarizeSettings.openaiApiUrl;
+
+      if (!apiUrl) {
+        throw new Error('API URL is not configured');
+      }
+
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (this.settings.apiChoice === 'openai') {
-        headers['Authorization'] = `Bearer ${this.settings.openAI.apiKey}`;
+
+      if (this.settings.summarizeSettings.provider === 'openai') {
+        headers['Authorization'] = `Bearer ${this.settings.chatSettings.openaiApiKey}`;
       }
 
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          model: this.settings.apiChoice === 'openai' ? this.settings.openAI.model : this.settings.localLLM.model,
+          model: this.settings.summarizeSettings.provider === 'local'
+            ? this.settings.summarizeSettings.localModel
+            : this.settings.summarizeSettings.openaiModel,
           messages: [
             { role: 'system', content: 'You are an expert at summarizing text clearly and concisely.' },
             { role: 'system', content: 'I will provide short snippets of text, often without context. Summarize them briefly and accurately.' },
-            { role: 'system', content: 'Provide the summary in raw GitHub Markdown format without any additional explanation or formatting.' },
-            { role: 'system', content: 'Use headings sparingly—only when absolutely necessary to clarify lengthy or complex concepts. Avoid headings entirely for short, simple summaries.' },
+            { role: 'system', content: 'Provide clear, direct summaries without any special formatting or markdown.' },
             { role: 'user', content: `Summarize the following text:\n\n${this.text}` }
           ],
-          stream: true
+          stream: true,
+          max_tokens: this.settings.summarizeSettings.maxTokens,
+          temperature: this.settings.summarizeSettings.temperature
         }),
         signal: this.controller.signal
       });
@@ -164,7 +179,8 @@ class AIHelperModal extends Modal {
       summarizeButton.removeAttribute('disabled');
       copyButton.removeAttribute('disabled');
     } catch (error) {
-      console.error('Error summarizing text:', error);
+      logError('Error summarizing text', error);
+      new Notice('Error generating summary. Please try again.');
       markdownPreview.value = 'Failed to summarize text:\n' + error;
 
       markdownPreview.setAttribute('disabled', 'true');

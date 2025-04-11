@@ -3,10 +3,22 @@ import { Settings } from '../settings';
 import { VectorStore } from './vectorStore';
 import { NoteEmbedding } from '../chat';
 import { logDebug, logError } from '../utils';
+import { App, Notice } from 'obsidian';
 
 interface EmbeddingModel {
   embed: (text: string) => Promise<Float32Array>;
 }
+
+// Static initialization state to track across instances
+let globalInitializationPromise: Promise<void> | null = null;
+let isGloballyInitialized = false;
+
+// Export these for use in main.ts
+export { globalInitializationPromise, isGloballyInitialized };
+
+// Classes for embedding management
+export let globalVectorStore: VectorStore | null = null;
+export let globalEmbeddingStore: EmbeddingStore | null = null;
 
 export class EmbeddingStore {
   private embeddings: Map<string, NoteEmbedding> = new Map();
@@ -374,4 +386,102 @@ export class EmbeddingStore {
       }
       return true;
   }
+}
+
+// Function to initialize the embedding system directly without requiring a view
+export async function initializeEmbeddingSystem(settings: Settings, app: App): Promise<void> {
+    // If already initialized or initializing, don't start again
+    if (isGloballyInitialized || globalInitializationPromise) {
+        return;
+    }
+
+    // Create global instances if they don't exist yet
+    if (!globalVectorStore) {
+        globalVectorStore = new VectorStore(settings.embeddingSettings.dimensions, settings, app);
+    } else {
+        // Ensure the app is set on the existing vector store
+        globalVectorStore.setApp(app);
+    }
+
+    if (!globalEmbeddingStore) {
+        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore);
+    }
+
+    // Start the initialization process asynchronously
+    globalInitializationPromise = (async () => {
+        try {
+            await globalEmbeddingStore.initialize();
+
+            // Index all markdown files
+            const files = app.vault.getMarkdownFiles();
+            logDebug(settings, `Starting to index ${files.length} notes for vector search`);
+
+            if (files.length === 0) {
+                logError("No markdown files found in the vault. This is unexpected.");
+
+                // Add a more detailed log to help diagnose the issue
+                try {
+                    const allFiles = app.vault.getAllLoadedFiles();
+                    logDebug(settings, `Total files in vault: ${allFiles.length}`);
+                    if (allFiles.length > 0) {
+                        logDebug(settings, `Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
+                    }
+                } catch (e) {
+                    logError("Error inspecting vault files", e);
+                }
+            }
+
+            // Create a custom notification for progress tracking if debug mode is enabled
+            let progressNotice: Notice | null = null;
+            let progressElement: HTMLElement | null = null;
+
+            progressNotice = new Notice('', 0);
+            progressElement = progressNotice.noticeEl.createDiv();
+            progressElement.setText(`Indexing notes: 0/${files.length}`);
+
+            let processedCount = 0;
+            for (const file of files) {
+                try {
+                    logDebug(settings, `Processing file: ${file.path}`);
+                    const content = await app.vault.cachedRead(file);
+                    await globalEmbeddingStore.addNote(file, content);
+
+                    // Update progress notification
+                    processedCount++;
+                    if (progressElement) {
+                        progressElement.setText(`Indexing notes: ${processedCount}/${files.length}`);
+                    }
+                } catch (error) {
+                    logError(`Error indexing note ${file.path}`, error);
+                }
+            }
+
+            // Show completion notification
+            if (progressNotice) {
+                progressNotice.hide(); // Hide the progress notification
+                new Notice(`Indexed ${files.length} notes for vector search`, 3000);
+            }
+
+            logDebug(settings, `Indexed ${files.length} notes for vector search`);
+            isGloballyInitialized = true;
+
+            // Dispatch a custom event that the plugin can listen for
+            // to trigger processing of any pending file updates
+            logDebug(settings, "Embedding initialization complete");
+
+            // Create custom event with payload indicating this is initial indexing
+            const event = new CustomEvent('ai-helper-indexing-complete', {
+                detail: { isInitialIndexing: true }
+            });
+            document.dispatchEvent(event);
+            logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
+
+        } catch (error) {
+            logError('Error initializing vector search', error);
+            // Use console error instead of Notice to avoid UI blocking
+            logError('Error initializing vector search. Some features may not work correctly.');
+        }
+    })();
+
+    return globalInitializationPromise;
 }

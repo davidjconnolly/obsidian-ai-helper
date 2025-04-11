@@ -47,8 +47,6 @@ export class LLMConnector {
               stream: false
           };
 
-          logDebug(this.settings, `Sending request to ${apiEndpoint} with body: ${JSON.stringify(requestBody)}`);
-
           const requestParams: RequestUrlParam = {
               url: apiEndpoint,
               method: 'POST',

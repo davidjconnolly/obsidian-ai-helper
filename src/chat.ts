@@ -449,7 +449,9 @@ export class AIHelperChatView extends ItemView {
 
     async generateResponse(userQuery: string): Promise<ChatMessage> {
         // Create context from relevant notes
-        const context = this.contextManager.buildContext(userQuery, this.relevantNotes, this.messages);
+        const context = this.contextManager.buildContext(userQuery, this.relevantNotes);
+
+        logDebug(this.settings, `Context: ${context}`);
 
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
@@ -466,10 +468,12 @@ If you're not sure about something, say so clearly.`;
 
         // Prepare messages for the LLM
         const messages: ChatMessage[] = [
-            { role: 'system', content: responseSystemPrompt },
-            { role: 'user', content: context },
+            { role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` },
+            { role: 'system', content: `Here is the conversation history:\n${this.messages.slice(0, -1).map(m => `${m.role}: ${m.content}`).join('\n')}` },
             { role: 'user', content: userQuery }
         ];
+
+        logDebug(this.settings, `Messages: ${JSON.stringify(messages)}`);
 
         // Send to LLM for processing
         const response = await this.llmConnector.generateResponse(messages);

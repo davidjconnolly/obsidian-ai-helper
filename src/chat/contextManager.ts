@@ -1,13 +1,14 @@
 import { NoteWithContent } from "src/chat";
 import { VectorStore, NoteChunk } from "./vectorStore";
+import { Settings } from "src/settings";
 
 export class ContextManager {
-  // TODO Adjust this
-  private readonly MAX_CONTEXT_LENGTH = 4000; // Adjust based on LLM limits
   private vectorStore: VectorStore;
+  private settings: Settings;
 
-  constructor(vectorStore: VectorStore) {
+  constructor(vectorStore: VectorStore, settings: Settings) {
       this.vectorStore = vectorStore;
+      this.settings = settings;
   }
 
   buildContext(query: string, notes: NoteWithContent[]): string {
@@ -20,7 +21,7 @@ export class ContextManager {
 
       for (const note of sortedNotes) {
         const excerpt = this.extractRelevantExcerpt(note, query);
-        if ((context + excerpt).length < this.MAX_CONTEXT_LENGTH) {
+        if ((context + excerpt).length < this.settings.chatSettings.maxContextLength) {
           context += `File: ${note.file.basename}\n`;
           context += `Path: ${note.file.path}\n`;
           context += `Relevance: ${note.relevance.toFixed(2)}\n`;

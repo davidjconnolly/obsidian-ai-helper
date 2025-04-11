@@ -104,7 +104,7 @@ export class AIHelperChatView extends ItemView {
                     logDebug(settings, 'Setting up chat view with initialized embedding system');
                     this.vectorStore = globalVectorStore;
                     this.embeddingStore = globalEmbeddingStore;
-                    this.contextManager = new ContextManager(this.vectorStore);
+                    this.contextManager = new ContextManager(this.vectorStore, this.settings);
                 } else {
                     throw new Error('Embedding system not properly initialized');
                 }

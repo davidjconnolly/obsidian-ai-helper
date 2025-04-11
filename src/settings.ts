@@ -24,6 +24,7 @@ export interface ChatSettings {
   maxNotesToSearch: number;
   displayWelcomeMessage: boolean;
   similarity: number;
+  maxContextLength: number;
 }
 
 export interface SummarizeSettings {
@@ -57,7 +58,8 @@ export const DEFAULT_SETTINGS: Settings = {
     temperature: 0.7,
     maxNotesToSearch: 20,
     displayWelcomeMessage: true,
-    similarity: 0.5,  // Default similarity threshold
+    similarity: 0.5,
+    maxContextLength: 4000,
   },
   embeddingSettings: {
     provider: 'openai',
@@ -226,6 +228,17 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.chatSettings.displayWelcomeMessage)
         .onChange(async (value) => {
           this.plugin.settings.chatSettings.displayWelcomeMessage = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Max context length')
+      .setDesc('Maximum number of characters to include in the context')
+      .addText(text => text
+        .setPlaceholder('Enter max context length')
+        .setValue(this.plugin.settings.chatSettings.maxContextLength.toString())
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.chatSettings.maxContextLength;
           await this.plugin.saveSettings();
         }));
 

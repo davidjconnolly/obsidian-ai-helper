@@ -1,4 +1,3 @@
-import { ChatMessage } from "src/chat";
 import { NoteWithContent } from "src/chat";
 import { VectorStore } from "./vectorStore";
 
@@ -10,47 +9,30 @@ export class ContextManager {
       this.vectorStore = vectorStore;
   }
 
-  buildContext(query: string, notes: NoteWithContent[], history: ChatMessage[]): string {
-      // Format conversation history, excluding the current message
-      // Create a copy of the history without the last message (which is the current query)
-      const historyWithoutCurrent = history.slice(0, -1);
-      let context = this.formatConversationHistory(historyWithoutCurrent);
+  buildContext(query: string, notes: NoteWithContent[]): string {
+    let context = '';
 
       // Add relevant notes
       if (notes.length > 0) {
-          context += "\n\nHere is information from your notes that may be relevant to your query:\n\n";
+        // Sort notes by relevance
+        const sortedNotes = [...notes].sort((a, b) => b.relevance - a.relevance);
 
-          // Sort notes by relevance
-          const sortedNotes = [...notes].sort((a, b) => b.relevance - a.relevance);
-
-          for (const note of sortedNotes) {
-              const excerpt = this.extractRelevantExcerpt(note, query);
-              if ((context + excerpt).length < this.MAX_CONTEXT_LENGTH) {
-                  context += `File: ${note.file.basename}\n`;
-                  context += `Path: ${note.file.path}\n`;
-                  context += `Relevance: ${note.relevance.toFixed(2)}\n`;
-                  context += `Content: ${excerpt}\n\n`;
-              } else {
-                  break;
-              }
-          }
+        for (const note of sortedNotes) {
+            const excerpt = this.extractRelevantExcerpt(note, query);
+            if ((context + excerpt).length < this.MAX_CONTEXT_LENGTH) {
+                context += `File: ${note.file.basename}\n`;
+                context += `Path: ${note.file.path}\n`;
+                context += `Relevance: ${note.relevance.toFixed(2)}\n`;
+                context += `Content: ${excerpt}\n\n`;
+            } else {
+                break;
+            }
+        }
       } else {
           context += "\n\nI couldn't find any notes specifically related to your query.";
       }
 
       return context;
-  }
-
-  private formatConversationHistory(history: ChatMessage[]): string {
-      // Only include the last few messages to save context space
-      const recentHistory = history.slice(-5);
-
-      let formattedHistory = "Previous conversation:\n";
-      for (const message of recentHistory) {
-          formattedHistory += `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.content}\n`;
-      }
-
-      return formattedHistory;
   }
 
   private extractRelevantExcerpt(note: NoteWithContent, query: string): string {

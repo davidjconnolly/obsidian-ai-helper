@@ -3,7 +3,7 @@ import { AI_CHAT_VIEW_TYPE, AIHelperChatView, openAIChat } from './chat';
 import { DEFAULT_SETTINGS, Settings, AIHelperSettingTab } from './settings';
 import { summarizeSelection } from './summarize';
 import { logDebug, logError } from './utils';
-import { globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat/embeddingStore';
+import { globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise, initializeEmbeddingSystem } from './chat/embeddingStore';
 
 // Custom debounce implementation with flush method
 function createDebounce<T extends (...args: any[]) => any>(
@@ -244,13 +244,18 @@ export default class AIHelperPlugin extends Plugin {
 		};
 		document.addEventListener('ai-helper-indexing-complete', this.indexingCompleteListener);
 
-		// If the plugin was just activated and settings allow, open the AI chat view
-		if (this.settings.openChatOnStartup) {
-			// Small delay to ensure other plugins have time to initialize
-			setTimeout(() => {
-				openAIChat(this.app);
-			}, 2500);
-		}
+		// Wait for workspace layout to be ready
+		this.app.workspace.onLayoutReady(() => {
+			// If not initialized, start initialization
+			if (!isGloballyInitialized && !globalInitializationPromise) {
+				initializeEmbeddingSystem(this.settings, this.app);
+			}
+
+			// If the plugin was just activated and settings allow, open the AI chat view
+			if (this.settings.openChatOnStartup) {
+					openAIChat(this.app);
+			}
+		});
 	}
 
 	onunload() {

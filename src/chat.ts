@@ -5,7 +5,7 @@ import { VectorStore } from './chat/vectorStore';
 import { EmbeddingStore } from './chat/embeddingStore';
 import { ContextManager } from './chat/contextManager';
 import { LLMConnector } from './chat/llmConnector';
-import { initializeEmbeddingSystem, globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
+import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
@@ -89,22 +89,30 @@ export class AIHelperChatView extends ItemView {
         // Set up the initialization promise
         this.initializationPromise = (async () => {
             try {
-                // If not initialized, start initialization
-                if (!isGloballyInitialized && !globalInitializationPromise) {
-                    await initializeEmbeddingSystem(settings, this.app);
-                }
-                // Wait for initialization to complete if it's in progress
-                else if (globalInitializationPromise) {
-                    await globalInitializationPromise;
+                // Wait for initialization to complete if it's in progress or hasn't started
+                while (!isGloballyInitialized) {
+                    if (globalInitializationPromise) {
+                        logDebug(settings, 'Waiting for existing initialization to complete');
+                        await globalInitializationPromise;
+                    } else {
+                        logDebug(settings, 'Waiting for initialization to start');
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
                 }
 
                 // Set up the instances
-                this.isInitialized = true;
-                this.vectorStore = globalVectorStore!;
-                this.embeddingStore = globalEmbeddingStore!;
-                this.contextManager = new ContextManager(this.vectorStore);
+                if (globalVectorStore && globalEmbeddingStore) {
+                    logDebug(settings, 'Setting up chat view with initialized embedding system');
+                    this.isInitialized = true;
+                    this.vectorStore = globalVectorStore;
+                    this.embeddingStore = globalEmbeddingStore;
+                    this.contextManager = new ContextManager(this.vectorStore);
+                } else {
+                    throw new Error('Embedding system not properly initialized');
+                }
             } catch (error) {
                 logError('Error during initialization', error);
+                this.isInitialized = false;
                 throw error;
             }
         })();

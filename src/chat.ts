@@ -5,8 +5,7 @@ import { VectorStore } from './chat/vectorStore';
 import { EmbeddingStore } from './chat/embeddingStore';
 import { ContextManager } from './chat/contextManager';
 import { LLMConnector } from './chat/llmConnector';
-import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
-import { initializeEmbeddingSystem } from './chat/embeddingStore';
+import { initializeEmbeddingSystem, globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
@@ -88,40 +87,27 @@ export class AIHelperChatView extends ItemView {
         this.llmConnector = new LLMConnector(settings);
 
         // Set up the initialization promise
-        this.initializationPromise = new Promise((resolve, reject) => {
-            if (isGloballyInitialized) {
-                // System is already initialized
+        this.initializationPromise = (async () => {
+            try {
+                // If not initialized, start initialization
+                if (!isGloballyInitialized && !globalInitializationPromise) {
+                    await initializeEmbeddingSystem(settings, this.app);
+                }
+                // Wait for initialization to complete if it's in progress
+                else if (globalInitializationPromise) {
+                    await globalInitializationPromise;
+                }
+
+                // Set up the instances
                 this.isInitialized = true;
                 this.vectorStore = globalVectorStore!;
                 this.embeddingStore = globalEmbeddingStore!;
                 this.contextManager = new ContextManager(this.vectorStore);
-                resolve();
-            } else if (globalInitializationPromise) {
-                // Initialization is in progress
-                globalInitializationPromise.then(() => {
-                    this.isInitialized = true;
-                    this.vectorStore = globalVectorStore!;
-                    this.embeddingStore = globalEmbeddingStore!;
-                    this.contextManager = new ContextManager(this.vectorStore);
-                    resolve();
-                }).catch(error => {
-                    logError('Error during initialization', error);
-                    reject(error);
-                });
-            } else {
-                // Start initialization
-                initializeEmbeddingSystem(settings, this.app).then(() => {
-                    this.isInitialized = true;
-                    this.vectorStore = globalVectorStore!;
-                    this.embeddingStore = globalEmbeddingStore!;
-                    this.contextManager = new ContextManager(this.vectorStore);
-                    resolve();
-                }).catch(error => {
-                    logError('Error during initialization', error);
-                    reject(error);
-                });
+            } catch (error) {
+                logError('Error during initialization', error);
+                throw error;
             }
-        });
+        })();
     }
 
     getViewType(): string {

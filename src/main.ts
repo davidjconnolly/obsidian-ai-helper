@@ -3,7 +3,7 @@ import { AI_CHAT_VIEW_TYPE, AIHelperChatView, openAIChat } from './chat';
 import { DEFAULT_SETTINGS, Settings, AIHelperSettingTab } from './settings';
 import { summarizeSelection } from './summarize';
 import { logDebug, logError } from './utils';
-import { initializeEmbeddingSystem, globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat/embeddingStore';
+import { globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat/embeddingStore';
 
 // Custom debounce implementation with flush method
 function createDebounce<T extends (...args: any[]) => any>(
@@ -221,15 +221,6 @@ export default class AIHelperPlugin extends Plugin {
 			}, checkInterval)
 		);
 
-		// Wait a bit longer for Obsidian to fully load the vault before starting the embedding process
-		// This avoids issues where the vault isn't fully loaded when we try to access files
-		setTimeout(() => {
-			// Start embedding initialization directly without creating a view
-			// This happens asynchronously and won't block the UI
-			logDebug(this.settings, "Starting delayed embedding initialization...");
-			initializeEmbeddingSystem(this.settings, this.app);
-		}, 2000); // 2 second delay
-
 		// Listen for completion of indexing to process any pending updates
 		this.indexingCompleteListener = (e: CustomEvent) => {
 			logDebug(this.settings, "Received indexing complete event, checking for modified files");
@@ -349,9 +340,8 @@ export default class AIHelperPlugin extends Plugin {
 		new Notice('Rescanning vault files for AI indexing...');
 
 		if (!globalEmbeddingStore) {
-			// Initialize the embedding system if not done yet
-			initializeEmbeddingSystem(this.settings, this.app);
-			new Notice('Embedding system initializing. Please try again in a few seconds.');
+			// // Initialize the embedding system if not done yet
+			logDebug(this.settings, 'Embedding system initializing. Please try again in a few seconds.');
 			return;
 		}
 

@@ -233,6 +233,10 @@ export class AIHelperChatView extends ItemView {
             const pathEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-path' });
             pathEl.setText(note.file.path);
 
+            // Add similarity score
+            const similarityEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-similarity' });
+            similarityEl.setText(`Relevance: ${(note.relevance * 100).toFixed(1)}%`);
+
             // Add last updated time
             const lastUpdatedEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-updated' });
             const lastUpdated = new Date(note.file.stat.mtime);
@@ -383,8 +387,8 @@ export class AIHelperChatView extends ItemView {
 
             // Find semantically similar content
             const results = await this.vectorStore.search(queryEmbedding, {
-                similarity: 0.5,
-                limit: this.settings.chatSettings.maxNotesToSearch || 20,
+                similarity: this.settings.chatSettings.similarity,
+                limit: this.settings.chatSettings.maxNotesToSearch,
                 searchTerms,
                 file // Pass the active file for recency context
             });

@@ -1,8 +1,9 @@
 import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
-import { AI_CHAT_VIEW_TYPE, AIHelperChatView, openAIChat, initializeEmbeddingSystem, globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat';
+import { AI_CHAT_VIEW_TYPE, AIHelperChatView, openAIChat } from './chat';
 import { DEFAULT_SETTINGS, Settings, AIHelperSettingTab } from './settings';
 import { summarizeSelection } from './summarize';
 import { logDebug, logError } from './utils';
+import { initializeEmbeddingSystem, globalEmbeddingStore, isGloballyInitialized, globalInitializationPromise } from './chat/embeddingStore';
 
 // Custom debounce implementation with flush method
 function createDebounce<T extends (...args: any[]) => any>(

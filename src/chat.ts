@@ -1,24 +1,15 @@
-import { App, Notice, TFile, ButtonComponent, MarkdownRenderer, ItemView, WorkspaceLeaf } from 'obsidian';
+import { App, TFile, ButtonComponent, MarkdownRenderer, ItemView, WorkspaceLeaf } from 'obsidian';
 import { Settings } from './settings';
 import { logDebug, logError } from './utils';
 import { VectorStore } from './chat/vectorStore';
 import { EmbeddingStore } from './chat/embeddingStore';
 import { ContextManager } from './chat/contextManager';
 import { LLMConnector } from './chat/llmConnector';
+import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
+import { initializeEmbeddingSystem } from './chat/embeddingStore';
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
-
-// Static initialization state to track across instances
-let globalInitializationPromise: Promise<void> | null = null;
-let isGloballyInitialized = false;
-
-// Export these for use in main.ts
-export { globalInitializationPromise, isGloballyInitialized };
-
-// Classes for embedding management
-let globalVectorStore: VectorStore | null = null;
-export let globalEmbeddingStore: EmbeddingStore | null = null;
 
 // Interface for a chat message
 export interface ChatMessage {
@@ -83,25 +74,54 @@ export class AIHelperChatView extends ItemView {
     private llmConnector: LLMConnector;
     private isInitialized = false;
     private isProcessing = false;
+    private initializationPromise: Promise<void> | null = null;
 
     constructor(leaf: WorkspaceLeaf, settings: Settings) {
         super(leaf);
         this.settings = settings;
         this.app = this.leaf.view.app;
 
-        // Use global instances if they exist, otherwise create new ones
-        this.vectorStore = globalVectorStore || new VectorStore(settings.embeddingSettings.dimensions, settings, this.app);
-        this.embeddingStore = globalEmbeddingStore || new EmbeddingStore(settings, this.vectorStore);
-
-        // If we created new instances, store them globally
-        if (!globalVectorStore) globalVectorStore = this.vectorStore;
-        if (!globalEmbeddingStore) globalEmbeddingStore = this.embeddingStore;
-
-        // Always ensure the app is set on the vector store
-        this.vectorStore.setApp(this.app);
-
-        this.contextManager = new ContextManager(this.vectorStore);
+        // Initialize with null values - they will be set when initialization completes
+        this.vectorStore = null!;
+        this.embeddingStore = null!;
+        this.contextManager = null!;
         this.llmConnector = new LLMConnector(settings);
+
+        // Set up the initialization promise
+        this.initializationPromise = new Promise((resolve, reject) => {
+            if (isGloballyInitialized) {
+                // System is already initialized
+                this.isInitialized = true;
+                this.vectorStore = globalVectorStore!;
+                this.embeddingStore = globalEmbeddingStore!;
+                this.contextManager = new ContextManager(this.vectorStore);
+                resolve();
+            } else if (globalInitializationPromise) {
+                // Initialization is in progress
+                globalInitializationPromise.then(() => {
+                    this.isInitialized = true;
+                    this.vectorStore = globalVectorStore!;
+                    this.embeddingStore = globalEmbeddingStore!;
+                    this.contextManager = new ContextManager(this.vectorStore);
+                    resolve();
+                }).catch(error => {
+                    logError('Error during initialization', error);
+                    reject(error);
+                });
+            } else {
+                // Start initialization
+                initializeEmbeddingSystem(settings, this.app).then(() => {
+                    this.isInitialized = true;
+                    this.vectorStore = globalVectorStore!;
+                    this.embeddingStore = globalEmbeddingStore!;
+                    this.contextManager = new ContextManager(this.vectorStore);
+                    resolve();
+                }).catch(error => {
+                    logError('Error during initialization', error);
+                    reject(error);
+                });
+            }
+        });
     }
 
     getViewType(): string {
@@ -130,14 +150,6 @@ export class AIHelperChatView extends ItemView {
         // Add welcome message if enabled in settings
         if (this.settings.chatSettings.displayWelcomeMessage) {
             this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
-        }
-
-        // Check if already initialized or initializing
-        if (isGloballyInitialized) {
-            this.isInitialized = true;
-        } else if (!globalInitializationPromise) {
-            // Start initialization if it hasn't started yet
-            initializeEmbeddingSystem(this.settings, this.app);
         }
     }
 
@@ -329,21 +341,15 @@ export class AIHelperChatView extends ItemView {
             // Add user message to chat
             this.addUserMessage(message);
 
-            // Start initialization if not started already
-            if (!isGloballyInitialized && !globalInitializationPromise) {
-                initializeEmbeddingSystem(this.settings, this.app);
+            // Wait for initialization to complete
+            if (this.initializationPromise) {
+                await this.initializationPromise;
+                this.initializationPromise = null; // Clear the promise after first use
             }
 
-            // If initialization is in progress, wait for it to complete
-            if (globalInitializationPromise && !isGloballyInitialized) {
-                const loadingMessage = this.messagesContainer.createDiv({
-                    cls: 'ai-helper-chat-message ai-helper-chat-message-assistant ai-helper-chat-loading'
-                });
-                loadingMessage.setText('Initializing search capabilities...');
-
-                await globalInitializationPromise;
-                loadingMessage.remove();
-                this.isInitialized = true;
+            // Ensure we have valid instances before proceeding
+            if (!this.vectorStore || !this.embeddingStore || !this.contextManager) {
+                throw new Error('Embedding system not properly initialized');
             }
 
             // Find relevant notes based on the query
@@ -361,15 +367,6 @@ export class AIHelperChatView extends ItemView {
         } finally {
             // Reset processing state
             this.setProcessingState(false);
-        }
-    }
-
-    async indexNote(file: TFile) {
-        try {
-            const content = await this.app.vault.cachedRead(file);
-            await this.embeddingStore.addNote(file, content);
-        } catch (error) {
-            logError(`Error indexing note ${file.path}`, error);
         }
     }
 
@@ -463,11 +460,6 @@ export class AIHelperChatView extends ItemView {
         // Create context from relevant notes
         const context = this.contextManager.buildContext(userQuery, this.relevantNotes, this.messages);
 
-        // If embeddings are not initialized yet
-        if (!isGloballyInitialized && globalInitializationPromise) {
-            return { role: 'assistant', content: "I'm still initializing my search capabilities. I'll be able to search through your notes shortly. Feel free to ask your question again in a moment." };
-        }
-
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
             return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
@@ -508,120 +500,4 @@ If you're not sure about something, say so clearly.`;
             this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
         }
     }
-
-    // This method is kept for backward compatibility
-    async initializeVectorSearch() {
-        if (isGloballyInitialized) {
-            this.isInitialized = true;
-            return;
-        }
-
-        if (globalInitializationPromise) {
-            await globalInitializationPromise;
-            this.isInitialized = true;
-            return;
-        }
-
-        // Start initialization
-        await initializeEmbeddingSystem(this.settings, this.app);
-        this.isInitialized = true;
-    }
-}
-
-// Function to initialize the embedding system directly without requiring a view
-export async function initializeEmbeddingSystem(settings: Settings, app: App): Promise<void> {
-    // If already initialized or initializing, don't start again
-    if (isGloballyInitialized || globalInitializationPromise) {
-        return;
-    }
-
-    // Create global instances if they don't exist yet
-    if (!globalVectorStore) {
-        globalVectorStore = new VectorStore(settings.embeddingSettings.dimensions, settings, app);
-    } else {
-        // Ensure the app is set on the existing vector store
-        globalVectorStore.setApp(app);
-    }
-
-    if (!globalEmbeddingStore) {
-        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore);
-    }
-
-    // Start the initialization process asynchronously
-    globalInitializationPromise = (async () => {
-        try {
-            await globalEmbeddingStore.initialize();
-
-            // Index all markdown files
-            const files = app.vault.getMarkdownFiles();
-            logDebug(settings, `Starting to index ${files.length} notes for vector search`);
-
-            if (files.length === 0) {
-                logError("No markdown files found in the vault. This is unexpected.");
-
-                // Add a more detailed log to help diagnose the issue
-                try {
-                    const allFiles = app.vault.getAllLoadedFiles();
-                    logDebug(settings, `Total files in vault: ${allFiles.length}`);
-                    if (allFiles.length > 0) {
-                        logDebug(settings, `Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
-                    }
-                } catch (e) {
-                    logError("Error inspecting vault files", e);
-                }
-            }
-
-            // Create a custom notification for progress tracking if debug mode is enabled
-            let progressNotice: Notice | null = null;
-            let progressElement: HTMLElement | null = null;
-
-            progressNotice = new Notice('', 0);
-            progressElement = progressNotice.noticeEl.createDiv();
-            progressElement.setText(`Indexing notes: 0/${files.length}`);
-
-            let processedCount = 0;
-            for (const file of files) {
-                try {
-                    logDebug(settings, `Processing file: ${file.path}`);
-                    const content = await app.vault.cachedRead(file);
-                    await globalEmbeddingStore.addNote(file, content);
-
-                    // Update progress notification
-                    processedCount++;
-                    if (progressElement) {
-                        progressElement.setText(`Indexing notes: ${processedCount}/${files.length}`);
-                    }
-                } catch (error) {
-                    logError(`Error indexing note ${file.path}`, error);
-                }
-            }
-
-            // Show completion notification
-            if (progressNotice) {
-                progressNotice.hide(); // Hide the progress notification
-                new Notice(`Indexed ${files.length} notes for vector search`, 3000);
-            }
-
-            logDebug(settings, `Indexed ${files.length} notes for vector search`);
-            isGloballyInitialized = true;
-
-            // Dispatch a custom event that the plugin can listen for
-            // to trigger processing of any pending file updates
-            logDebug(settings, "Embedding initialization complete");
-
-            // Create custom event with payload indicating this is initial indexing
-            const event = new CustomEvent('ai-helper-indexing-complete', {
-                detail: { isInitialIndexing: true }
-            });
-            document.dispatchEvent(event);
-            logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
-
-        } catch (error) {
-            logError('Error initializing vector search', error);
-            // Use console error instead of Notice to avoid UI blocking
-            logError('Error initializing vector search. Some features may not work correctly.');
-        }
-    })();
-
-    return globalInitializationPromise;
 }

@@ -1,7 +1,8 @@
 import { NoteWithContent } from "src/chat";
-import { VectorStore } from "./vectorStore";
+import { VectorStore, NoteChunk } from "./vectorStore";
 
 export class ContextManager {
+  // TODO Adjust this
   private readonly MAX_CONTEXT_LENGTH = 4000; // Adjust based on LLM limits
   private vectorStore: VectorStore;
 
@@ -12,40 +13,80 @@ export class ContextManager {
   buildContext(query: string, notes: NoteWithContent[]): string {
     let context = '';
 
-      // Add relevant notes
-      if (notes.length > 0) {
-        // Sort notes by relevance
-        const sortedNotes = [...notes].sort((a, b) => b.relevance - a.relevance);
+    // Add relevant notes
+    if (notes.length > 0) {
+      // Sort notes by relevance
+      const sortedNotes = [...notes].sort((a, b) => b.relevance - a.relevance);
 
-        for (const note of sortedNotes) {
-            const excerpt = this.extractRelevantExcerpt(note, query);
-            if ((context + excerpt).length < this.MAX_CONTEXT_LENGTH) {
-                context += `File: ${note.file.basename}\n`;
-                context += `Path: ${note.file.path}\n`;
-                context += `Relevance: ${note.relevance.toFixed(2)}\n`;
-                context += `Content: ${excerpt}\n\n`;
-            } else {
-                break;
-            }
+      for (const note of sortedNotes) {
+        const excerpt = this.extractRelevantExcerpt(note, query);
+        if ((context + excerpt).length < this.MAX_CONTEXT_LENGTH) {
+          context += `File: ${note.file.basename}\n`;
+          context += `Path: ${note.file.path}\n`;
+          context += `Relevance: ${note.relevance.toFixed(2)}\n`;
+          context += `Content: ${excerpt}\n\n`;
+        } else {
+          break;
         }
-      } else {
-          context += "\n\nI couldn't find any notes specifically related to your query.";
       }
+    } else {
+      context += "\n\nI couldn't find any notes specifically related to your query.";
+    }
 
-      return context;
+    return context;
   }
 
   private extractRelevantExcerpt(note: NoteWithContent, query: string): string {
-      // If we have a chunkIndex in the note metadata, use that specific chunk
-      if ('chunkIndex' in note && typeof note.chunkIndex === 'number') {
-          const chunk = this.vectorStore.getChunk(note.file.path, note.chunkIndex);
-          if (chunk) {
-              return chunk.content;
-          }
-      }
+    // If we have a chunkIndex in the note metadata, use that specific chunk
+    if ('chunkIndex' in note && typeof note.chunkIndex === 'number') {
+        const chunk = this.vectorStore.getChunk(note.file.path, note.chunkIndex);
+        if (chunk) {
+            return chunk.content;
+        }
+    }
 
-      // Otherwise, use a more sophisticated approach to find relevant sections
-      return this.findRelevantSection(note.content, query);
+    // Get all chunks and find relevant ones using the same scoring logic
+    const allChunks = this.vectorStore.getAllChunks(note.file.path);
+    if (allChunks && allChunks.length > 0) {
+        // Extract keywords from query
+        const keywords = query.toLowerCase()
+            .replace(/[^\w\s]/g, '')
+            .split(/\s+/)
+            .filter(word => word.length > 3);
+
+        // Score chunks based on keyword matches
+        const scoredChunks = allChunks.map(chunk => {
+            const lowerContent = chunk.content.toLowerCase();
+            let score = 0;
+
+            // Count keyword matches
+            for (const keyword of keywords) {
+                const regex = new RegExp(`\\b${keyword}\\b`, 'g');
+                const matches = (lowerContent.match(regex) || []).length;
+                score += matches * 2; // Weight exact matches more heavily
+
+                // Also count partial matches
+                if (lowerContent.includes(keyword)) {
+                    score += 1;
+                }
+            }
+
+            return { chunk, score };
+        });
+
+        // Filter chunks with scores > 0 and sort by relevance
+        const relevantChunks = scoredChunks
+            .filter(({ score }) => score > 0)
+            .sort((a, b) => b.score - a.score)
+            .map(({ chunk }) => chunk.content);
+
+        if (relevantChunks.length > 0) {
+            return relevantChunks.join('\n\n');
+        }
+    }
+
+    // Fallback to finding relevant sections in the content
+    return this.findRelevantSection(note.content, query);
   }
 
   private findRelevantSection(content: string, query: string): string {

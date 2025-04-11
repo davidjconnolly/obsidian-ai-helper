@@ -1,7 +1,12 @@
 import { App, TFile } from 'obsidian';
-import { NoteChunk, NoteEmbedding } from "src/chat";
+import { NoteEmbedding } from "src/chat";
 import { Settings } from "src/settings";
 import { logDebug, logError } from "src/utils";
+
+export interface NoteChunk {
+    content: string;
+    embedding?: Float32Array;
+}
 
 export class VectorStore {
   private embeddings: Map<string, NoteEmbedding> = new Map();
@@ -26,11 +31,11 @@ export class VectorStore {
       const daysSinceModified = (now - mtime) / (1000 * 60 * 60 * 24);
 
       // Exponential decay function that gives:
-      // - 0.3 (max recency boost) for files modified today
-      // - 0.15 for files modified a week ago
-      // - 0.075 for files modified a month ago
+      // - 0.1 (max recency boost) for files modified today
+      // - 0.05 for files modified a week ago
+      // - 0.025 for files modified a month ago
       // - Approaching 0 for older files
-      return 0.3 * Math.exp(-daysSinceModified / 30);
+      return 0.1 * Math.exp(-daysSinceModified / 30);
   }
 
   async search(queryEmbedding: Float32Array, options: {
@@ -59,8 +64,8 @@ export class VectorStore {
           baseScore: number;
       }[] = [];
 
-      const similarityThreshold = options.similarity || 0.5;
-      const limit = options.limit || 5;
+      const similarityThreshold = options.similarity;
+      const limit = options.limit;
       const searchTerms = options.searchTerms || [];
 
       for (const [path, noteEmbedding] of this.embeddings.entries()) {
@@ -71,7 +76,7 @@ export class VectorStore {
           const filename = path.split('/').pop()?.toLowerCase() || '';
           const titleScore = searchTerms.reduce((score, term) => {
               if (filename.includes(term.toLowerCase())) {
-                  score += 0.3;
+                  score += 0.5;
               }
               return score;
           }, 0);
@@ -103,9 +108,8 @@ export class VectorStore {
           // Sort chunks by similarity
           noteChunks.sort((a, b) => b.similarity - a.similarity);
 
-          // Take the top 2 chunks if they exist
-          for (let i = 0; i < Math.min(2, noteChunks.length); i++) {
-              const chunk = noteChunks[i];
+          // Include all chunks that meet the similarity threshold
+          for (const chunk of noteChunks) {
               const baseScore = chunk.similarity;
               const combinedScore = baseScore + titleScore + recencyScore;
 
@@ -119,18 +123,6 @@ export class VectorStore {
                       recencyScore
                   });
               }
-          }
-
-          // Always include best chunk if it has a title match or is recent
-          if ((titleScore > 0 || recencyScore > 0.15) && maxSimilarity > 0 && !results.some(r => r.path === path)) {
-              results.push({
-                  path,
-                  score: maxSimilarity + titleScore + recencyScore,
-                  baseScore: maxSimilarity,
-                  chunkIndex: bestChunkIndex,
-                  titleScore,
-                  recencyScore
-              });
           }
       }
 
@@ -218,5 +210,14 @@ export class VectorStore {
           return null;
       }
       return noteEmbedding.chunks[chunkIndex];
+  }
+
+  // Get all chunks for a note
+  getAllChunks(path: string): NoteChunk[] | null {
+      const noteEmbedding = this.embeddings.get(path);
+      if (!noteEmbedding) {
+          return null;
+      }
+      return noteEmbedding.chunks;
   }
 }

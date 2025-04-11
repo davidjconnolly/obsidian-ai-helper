@@ -71,7 +71,6 @@ export class AIHelperChatView extends ItemView {
     private vectorStore: VectorStore;
     private contextManager: ContextManager;
     private llmConnector: LLMConnector;
-    private isInitialized = false;
     private isProcessing = false;
     private initializationPromise: Promise<void> | null = null;
 
@@ -103,7 +102,6 @@ export class AIHelperChatView extends ItemView {
                 // Set up the instances
                 if (globalVectorStore && globalEmbeddingStore) {
                     logDebug(settings, 'Setting up chat view with initialized embedding system');
-                    this.isInitialized = true;
                     this.vectorStore = globalVectorStore;
                     this.embeddingStore = globalEmbeddingStore;
                     this.contextManager = new ContextManager(this.vectorStore);
@@ -112,7 +110,6 @@ export class AIHelperChatView extends ItemView {
                 }
             } catch (error) {
                 logError('Error during initialization', error);
-                this.isInitialized = false;
                 throw error;
             }
         })();
@@ -387,7 +384,7 @@ export class AIHelperChatView extends ItemView {
             // Find semantically similar content
             const results = await this.vectorStore.search(queryEmbedding, {
                 similarity: 0.5,
-                limit: this.settings.chatSettings.maxNotesToSearch || 5,
+                limit: this.settings.chatSettings.maxNotesToSearch || 20,
                 searchTerms,
                 file // Pass the active file for recency context
             });

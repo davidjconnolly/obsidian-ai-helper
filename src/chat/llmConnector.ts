@@ -1,7 +1,7 @@
 import { requestUrl, RequestUrlParam } from 'obsidian';
 import { Settings } from "src/settings";
 import { ChatMessage } from "src/chat";
-import { logError } from "src/utils";
+import { logError, logDebug } from "src/utils";
 
 export class LLMConnector {
   private settings: Settings;
@@ -46,6 +46,8 @@ export class LLMConnector {
               max_tokens: this.settings.chatSettings.maxTokens,
               stream: false
           };
+
+          logDebug(this.settings, `Sending request to ${apiEndpoint} with body: ${JSON.stringify(requestBody)}`);
 
           const requestParams: RequestUrlParam = {
               url: apiEndpoint,

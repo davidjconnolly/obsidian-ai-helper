@@ -11,8 +11,9 @@ export class ContextManager {
       this.settings = settings;
   }
 
-  buildContext(query: string, notes: NoteWithContent[]): string {
+  buildContext(query: string, notes: NoteWithContent[], existingContextLength: number): string {
     let context = '';
+    const maxContextLength = this.settings.chatSettings.maxContextLength - existingContextLength;
 
     // Add relevant notes
     if (notes.length > 0) {
@@ -21,13 +22,14 @@ export class ContextManager {
 
       for (const note of sortedNotes) {
         const excerpt = this.extractRelevantExcerpt(note, query);
-        if ((context + excerpt).length < this.settings.chatSettings.maxContextLength) {
-          context += `File: ${note.file.basename}\n`;
-          context += `Path: ${note.file.path}\n`;
-          context += `Relevance: ${note.relevance.toFixed(2)}\n`;
-          context += `Content: ${excerpt}\n\n`;
-        } else {
+        const newContext = context + `File: ${note.file.basename}\nPath: ${note.file.path}\nRelevance: ${note.relevance.toFixed(2)}\nContent: ${excerpt}\n\n`;
+
+        // Check if adding this note would exceed the limit
+        if (JSON.stringify(newContext).length > maxContextLength) {
+          context = newContext.substring(0, maxContextLength);
           break;
+        } else {
+          context = newContext;
         }
       }
     } else {

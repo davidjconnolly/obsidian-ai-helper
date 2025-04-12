@@ -452,11 +452,6 @@ export class AIHelperChatView extends ItemView {
     }
 
     async generateResponse(userQuery: string): Promise<ChatMessage> {
-        // Create context from relevant notes
-        const context = this.contextManager.buildContext(userQuery, this.relevantNotes);
-
-        logDebug(this.settings, `Context: ${context}`);
-
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
             return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
@@ -472,12 +467,15 @@ If you're not sure about something, say so clearly.`;
 
         // Prepare messages for the LLM
         const messages: ChatMessage[] = [
-            { role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` },
             { role: 'system', content: `Here is the conversation history:\n${this.messages.slice(0, -1).map(m => `${m.role}: ${m.content}`).join('\n')}` },
             { role: 'user', content: userQuery }
         ];
 
-        logDebug(this.settings, `Messages: ${JSON.stringify(messages)}`);
+        // Create context from relevant notes
+        //ToDo - There's probably a better way to do this, I'm just eyeballing 200 as a buffer to keep it under the limit, but it's not exact
+        const context = this.contextManager.buildContext(userQuery, this.relevantNotes, JSON.stringify(messages).length + JSON.stringify(responseSystemPrompt).length + 200);
+
+        messages.unshift({ role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` });
 
         // Send to LLM for processing
         const response = await this.llmConnector.generateResponse(messages);

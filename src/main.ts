@@ -82,117 +82,120 @@ export default class AIHelperPlugin extends Plugin {
 			})
 		);
 
-		// Register for vault changes to ensure we catch all files
-		this.registerEvent(
-			this.app.vault.on('create', (file) => {
-				if (file instanceof TFile && file.extension === 'md') {
-					logDebug(this.settings, `New markdown file created: ${file.path}. Will add to index.`);
-					this.fileUpdateManager.reindexFile(file);
-				}
-			})
-		);
-
-		// Register for file deletion events to remove embeddings
-		this.registerEvent(
-			this.app.vault.on('delete', (file) => {
-				if (file instanceof TFile && file.extension === 'md') {
-					logDebug(this.settings, `Markdown file deleted: ${file.path}. Removing from index.`);
-					this.fileUpdateManager.removeFileFromIndex(file.path);
-					this.modifiedFiles.delete(file.path); // Clean up from modified files tracking
-				}
-			})
-		);
-
-		// Also register for file rename events
-		this.registerEvent(
-			this.app.vault.on('rename', (file, oldPath) => {
-				if (file instanceof TFile && file.extension === 'md') {
-					logDebug(this.settings, `Markdown file renamed from ${oldPath} to ${file.path}. Updating index.`);
-					this.fileUpdateManager.removeFileFromIndex(oldPath);
-					this.fileUpdateManager.reindexFile(file);
-
-					// Update tracking if the file was in the modified list
-					if (this.modifiedFiles.has(oldPath)) {
-						const timestamp = this.modifiedFiles.get(oldPath);
-						this.modifiedFiles.delete(oldPath);
-						this.modifiedFiles.set(file.path, timestamp || Date.now());
+		// Only set up file monitoring if update mode is 'onUpdate'
+		if (this.settings.embeddingSettings.updateMode === 'onUpdate') {
+			// Register for vault changes to ensure we catch all files
+			this.registerEvent(
+				this.app.vault.on('create', (file) => {
+					if (file instanceof TFile && file.extension === 'md') {
+						logDebug(this.settings, `New markdown file created: ${file.path}. Will add to index.`);
+						this.fileUpdateManager.reindexFile(file);
 					}
-				}
-			})
-		);
+				})
+			);
 
-		// Register for file modification events
-		this.registerEvent(
-			this.app.vault.on('modify', (file) => {
-				if (file instanceof TFile && file.extension === 'md') {
-					// Track the modification time
-					const now = Date.now();
-					logDebug(this.settings, `File modified: ${file.path} at ${new Date(now).toLocaleTimeString()}`);
+			// Register for file deletion events to remove embeddings
+			this.registerEvent(
+				this.app.vault.on('delete', (file) => {
+					if (file instanceof TFile && file.extension === 'md') {
+						logDebug(this.settings, `Markdown file deleted: ${file.path}. Removing from index.`);
+						this.fileUpdateManager.removeFileFromIndex(file.path);
+						this.modifiedFiles.delete(file.path); // Clean up from modified files tracking
+					}
+				})
+			);
 
-					// Check if this is a new modification or an update to an existing one
-					const wasAlreadyModified = this.modifiedFiles.has(file.path);
-					this.modifiedFiles.set(file.path, now);
+			// Also register for file rename events
+			this.registerEvent(
+				this.app.vault.on('rename', (file, oldPath) => {
+					if (file instanceof TFile && file.extension === 'md') {
+						logDebug(this.settings, `Markdown file renamed from ${oldPath} to ${file.path}. Updating index.`);
+						this.fileUpdateManager.removeFileFromIndex(oldPath);
+						this.fileUpdateManager.reindexFile(file);
 
-					if (wasAlreadyModified) {
-						logDebug(this.settings, `Updated timestamp for already modified file: ${file.path}`);
+						// Update tracking if the file was in the modified list
+						if (this.modifiedFiles.has(oldPath)) {
+							const timestamp = this.modifiedFiles.get(oldPath);
+							this.modifiedFiles.delete(oldPath);
+							this.modifiedFiles.set(file.path, timestamp || Date.now());
+						}
+					}
+				})
+			);
+
+			// Register for file modification events
+			this.registerEvent(
+				this.app.vault.on('modify', (file) => {
+					if (file instanceof TFile && file.extension === 'md') {
+						// Track the modification time
+						const now = Date.now();
+						logDebug(this.settings, `File modified: ${file.path} at ${new Date(now).toLocaleTimeString()}`);
+
+						// Check if this is a new modification or an update to an existing one
+						const wasAlreadyModified = this.modifiedFiles.has(file.path);
+						this.modifiedFiles.set(file.path, now);
+
+						if (wasAlreadyModified) {
+							logDebug(this.settings, `Updated timestamp for already modified file: ${file.path}`);
+						} else {
+							logDebug(this.settings, `Added new file to modification queue: ${file.path}`);
+						}
+
+						// Trigger the debounced update function
+						this.fileUpdateManager.processPendingFileUpdates();
+						logDebug(this.settings, `Debounced update triggered, will process after ${this.settings.fileUpdateFrequency/2} seconds of inactivity`);
+					}
+				})
+			);
+
+			// Set up periodic checking for modified files
+			// The interval will be twice the user-defined file update frequency
+			const checkInterval = this.fileUpdateManager.getPeriodicCheckInterval();
+			logDebug(this.settings, `Setting up periodic check interval: ${checkInterval}ms`);
+
+			this.registerInterval(
+				window.setInterval(() => {
+					// This ensures any files that weren't updated due to debounce are eventually processed
+					logDebug(this.settings, `Periodic check running at ${new Date().toLocaleTimeString()}`);
+
+					// Skip processing during initial indexing
+					if (this.fileUpdateManager.isInitialIndexingInProgress()) {
+						logDebug(this.settings, 'Initial indexing still in progress, skipping periodic check');
+						return;
+					}
+
+					if (this.modifiedFiles.size > 0) {
+						logDebug(this.settings, `Found ${this.modifiedFiles.size} modified files in queue, processing now`);
+						this.fileUpdateManager.processPendingFileUpdates.flush();
 					} else {
-						logDebug(this.settings, `Added new file to modification queue: ${file.path}`);
+						logDebug(this.settings, 'No modified files in queue');
 					}
+				}, checkInterval)
+			);
 
-					// Trigger the debounced update function
-					this.fileUpdateManager.processPendingFileUpdates();
-					logDebug(this.settings, `Debounced update triggered, will process after ${this.settings.fileUpdateFrequency/2} seconds of inactivity`);
+			// Listen for completion of indexing to process any pending updates
+			this.indexingCompleteListener = (e: CustomEvent) => {
+				logDebug(this.settings, "Received indexing complete event, checking for modified files");
+
+				// Check if this is the first indexing after startup
+				const isInitialIndexing = e.detail?.isInitialIndexing === true;
+
+				// For initial indexing, clear all modified files to prevent reindexing what was just indexed
+				if (isInitialIndexing) {
+					logDebug(this.settings, `This is the initial indexing. Clearing ${this.modifiedFiles.size} modified files to prevent duplicate indexing.`);
+					this.modifiedFiles.clear(); // Clear all modified files
 				}
-			})
-		);
-
-		// Set up periodic checking for modified files
-		// The interval will be twice the user-defined file update frequency
-		const checkInterval = this.fileUpdateManager.getPeriodicCheckInterval();
-		logDebug(this.settings, `Setting up periodic check interval: ${checkInterval}ms`);
-
-		this.registerInterval(
-			window.setInterval(() => {
-				// This ensures any files that weren't updated due to debounce are eventually processed
-				logDebug(this.settings, `Periodic check running at ${new Date().toLocaleTimeString()}`);
-
-				// Skip processing during initial indexing
-				if (this.fileUpdateManager.isInitialIndexingInProgress()) {
-					logDebug(this.settings, 'Initial indexing still in progress, skipping periodic check');
-					return;
-				}
-
-				if (this.modifiedFiles.size > 0) {
-					logDebug(this.settings, `Found ${this.modifiedFiles.size} modified files in queue, processing now`);
+				// Only process files if this is not the initial indexing
+				else if (this.modifiedFiles.size > 0) {
+					logDebug(this.settings, `Processing ${this.modifiedFiles.size} files that were explicitly modified during initialization`);
+					// Process only files that are actually in the queue, don't trigger a full reindex
 					this.fileUpdateManager.processPendingFileUpdates.flush();
 				} else {
-					logDebug(this.settings, 'No modified files in queue');
+					logDebug(this.settings, "No files were modified during initialization, nothing to process");
 				}
-			}, checkInterval)
-		);
-
-		// Listen for completion of indexing to process any pending updates
-		this.indexingCompleteListener = (e: CustomEvent) => {
-			logDebug(this.settings, "Received indexing complete event, checking for modified files");
-
-			// Check if this is the first indexing after startup
-			const isInitialIndexing = e.detail?.isInitialIndexing === true;
-
-			// For initial indexing, clear all modified files to prevent reindexing what was just indexed
-			if (isInitialIndexing) {
-				logDebug(this.settings, `This is the initial indexing. Clearing ${this.modifiedFiles.size} modified files to prevent duplicate indexing.`);
-				this.modifiedFiles.clear(); // Clear all modified files
-			}
-			// Only process files if this is not the initial indexing
-			else if (this.modifiedFiles.size > 0) {
-				logDebug(this.settings, `Processing ${this.modifiedFiles.size} files that were explicitly modified during initialization`);
-				// Process only files that are actually in the queue, don't trigger a full reindex
-				this.fileUpdateManager.processPendingFileUpdates.flush();
-			} else {
-				logDebug(this.settings, "No files were modified during initialization, nothing to process");
-			}
-		};
-		document.addEventListener('ai-helper-indexing-complete', this.indexingCompleteListener);
+			};
+			document.addEventListener('ai-helper-indexing-complete', this.indexingCompleteListener);
+		}
 
 		// Wait for workspace layout to be ready
 		this.app.workspace.onLayoutReady(() => {

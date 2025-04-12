@@ -25,6 +25,12 @@ export class VectorStore {
       this.app = app;
   }
 
+  clear() {
+      this.embeddings.clear();
+      this.index.clear();
+      logDebug(this.settings, 'Cleared vector store');
+  }
+
   // Helper method to calculate recency score
   private calculateRecencyScore(mtime: number): number {
       const now = Date.now();

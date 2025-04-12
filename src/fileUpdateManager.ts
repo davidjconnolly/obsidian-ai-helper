@@ -54,206 +54,262 @@ function createDebounce<T extends (...args: any[]) => any>(
 }
 
 export class FileUpdateManager {
-  private settings: Settings;
-  private app: App;
-  modifiedFiles: Map<string, number> = new Map();
-  processPendingFileUpdates: ReturnType<typeof createDebounce<() => void>>;
+	private settings: Settings;
+	private app: App;
+	public modifiedFiles: Map<string, number> = new Map();
+	public processPendingFileUpdates: { (...args: any[]): void; flush: () => void; };
 
-  constructor(settings: Settings, app: App) {
-    this.settings = settings;
-    this.app = app;
-    this.modifiedFiles = new Map();
+	constructor(settings: Settings, app: App) {
+		this.settings = settings;
+		this.app = app;
+		this.processPendingFileUpdates = createDebounce(
+			this.processPendingUpdates.bind(this),
+			this.settings.fileUpdateFrequency * 1000
+		);
+	}
 
-    // Create the debounced function for file updates
-    this.updateDebounceSettings();
-  }
+	private async processPendingUpdates() {
+		const now = Date.now();
+		const filesToUpdate: string[] = [];
 
-    // Helper method to reindex a file
-  async reindexFile(file: TFile) {
-    if (!globalEmbeddingStore) {
-      logDebug(this.settings, `Embedding store not yet initialized, queueing ${file.path} for later reindexing`);
-      // Queue it for later when embedding store is ready
-      this.modifiedFiles.set(file.path, Date.now());
-      return;
-    }
+		logDebug(this.settings, `Checking for files to update at ${new Date().toLocaleTimeString()}`);
+		logDebug(this.settings, `Current modified files queue: ${this.modifiedFiles.size} files`);
 
-    try {
-      logDebug(this.settings, `Starting to reindex file: ${file.path}`);
-      const content = await this.app.vault.cachedRead(file);
+		// Check if this is directly after initialization to prevent duplicate indexing
+		if (this.modifiedFiles.size > 0) {
+			// Find files that were modified more than the configured update frequency ago
+			const updateDelayMs = this.settings.fileUpdateFrequency * 1000; // Convert to milliseconds
 
-      // Skip empty or very short files
-      if (!content || content.trim().length < 50) {
-        logDebug(this.settings, `File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
-        return;
-      }
+			this.modifiedFiles.forEach((timestamp, path) => {
+				const ageMs = now - timestamp;
+				const shouldUpdate = true; // Always update modified files
 
-      // Remove the old embedding first to ensure it's fully updated
-      try {
-        logDebug(this.settings, `Removing old embedding for ${file.path} before reindexing`);
-        globalEmbeddingStore.removeNote(file.path);
-      } catch (e) {
-        logDebug(this.settings, `No existing embedding found for ${file.path}, creating new one`);
-      }
+				logDebug(this.settings, `File ${path} modified ${Math.round(ageMs/1000)}s ago, should update: ${shouldUpdate}`);
 
-      // Add the new embedding
-      await globalEmbeddingStore.addNote(file, content);
-      logDebug(this.settings, `Successfully reindexed file: ${file.path}`);
+				if (shouldUpdate) {
+					filesToUpdate.push(path);
+				}
+			});
 
-      // Show a notification if debug mode is enabled
-      if (this.settings.debugMode) {
-        new Notice(`Reindexed: ${file.path}`, 2000);
-      }
-    } catch (error) {
-      logError(`Error reindexing file ${file.path}`, error);
-    }
-  }
+			// Process files that qualify for update
+			if (filesToUpdate.length > 0) {
+				logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
 
-  // Helper method to rescan all vault files
-  rescanVaultFiles() {
-    new Notice('Rescanning vault files for AI indexing...');
+				filesToUpdate.forEach(path => {
+					// Remove from tracking
+					this.modifiedFiles.delete(path);
 
-    if (!globalEmbeddingStore) {
-      // // Initialize the embedding system if not done yet
-      logDebug(this.settings, 'Embedding system initializing. Please try again in a few seconds.');
-      return;
-    }
+					// Get the file and reindex
+					const file = this.app.vault.getAbstractFileByPath(path);
+					if (file instanceof TFile && file.extension === 'md') {
+						this.reindexFile(file);
+					} else {
+						logError(`File not found or not a markdown file: ${path}`);
+					}
+				});
+			} else {
+				logDebug(this.settings, 'No files need updating at this time');
+			}
+		} else {
+			logDebug(this.settings, 'No modified files in queue');
+		}
+	}
 
-    // Get all markdown files
-    const files = this.app.vault.getMarkdownFiles();
-    logDebug(this.settings, `Found ${files.length} markdown files to index`);
+	// Helper method to reindex a file
+	async reindexFile(file: TFile) {
+		if (!globalEmbeddingStore) {
+			logDebug(this.settings, `Embedding store not yet initialized, queueing ${file.path} for later reindexing`);
+			// Queue it for later when embedding store is ready
+			this.modifiedFiles.set(file.path, Date.now());
+			return;
+		}
 
-    if (files.length === 0) {
-      new Notice('No markdown files found in your vault.');
-      return;
-    }
+		if (this.settings.embeddingSettings.updateMode === 'none') {
+			logDebug(this.settings, `Update mode is set to 'none', skipping reindex of ${file.path}`);
+			return;
+		}
 
-    // Create a custom notification for progress tracking
-    const progressNotice = new Notice('', 0);
-    const progressElement = progressNotice.noticeEl.createDiv();
-    progressElement.setText(`Indexing files: 0/${files.length}`);
+		try {
+			logDebug(this.settings, `Starting to reindex file: ${file.path}`);
+			const content = await this.app.vault.cachedRead(file);
 
-    // Process files in batches to avoid UI blocking
-    let processedCount = 0;
-    const processFiles = (batch: TFile[], startIndex: number) => {
-      Promise.all(batch.map(async (file) => {
-        try {
-          const content = await this.app.vault.cachedRead(file);
+			// Skip empty or very short files
+			if (!content || content.trim().length < 50) {
+				logDebug(this.settings, `File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
+				return;
+			}
 
-          // Skip empty or very short files
-          if (!content || content.trim().length < 50) {
-            logDebug(this.settings, `File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
-            processedCount++;
-            return;
-          }
+			// Remove the old embedding first to ensure it's fully updated
+			try {
+				logDebug(this.settings, `Removing old embedding for ${file.path} before reindexing`);
+				globalEmbeddingStore.removeNote(file.path);
+			} catch (e) {
+				logDebug(this.settings, `No existing embedding found for ${file.path}, creating new one`);
+			}
 
-          await globalEmbeddingStore?.addNote(file, content);
-          processedCount++;
-        } catch (error) {
-          logError(`Error indexing file ${file.path}`, error);
-          processedCount++; // Still count as processed even if it fails
-        }
-      })).then(() => {
-        // Update notice with current progress
-        progressElement.setText(`Indexing files: ${processedCount}/${files.length}`);
+			// Add the new embedding
+			await globalEmbeddingStore.addNote(file, content);
 
-        // Process next batch
-        const nextStartIndex = startIndex + batch.length;
-        if (nextStartIndex < files.length) {
-          const nextBatch = files.slice(nextStartIndex, nextStartIndex + 10);
-          setTimeout(() => processFiles(nextBatch, nextStartIndex), 50);
-        } else {
-          // Show completion notification
-          progressNotice.hide(); // Hide the progress notification
-          new Notice(`Completed indexing ${processedCount} files for AI search`, 3000);
-        }
-      });
-    };
+			// Save the updated embeddings to disk
+			await globalEmbeddingStore.saveToFile();
 
-    // Start processing files in batches of 10
-    const firstBatch = files.slice(0, 10);
-    processFiles(firstBatch, 0);
-  }
+			logDebug(this.settings, `Successfully reindexed file: ${file.path}`);
 
-  // Helper method to remove a file from the index
-  async removeFileFromIndex(filePath: string) {
-    if (!globalEmbeddingStore) {
-      logDebug(this.settings, "Embedding store not yet initialized, skipping removal");
-      return;
-    }
+			// Show a notification if debug mode is enabled
+			if (this.settings.debugMode) {
+				new Notice(`Reindexed: ${file.path}`, 2000);
+			}
+		} catch (error) {
+			logError(`Error reindexing file ${file.path}`, error);
+		}
+	}
 
-    try {
-      globalEmbeddingStore.removeNote(filePath);
-      logDebug(this.settings, `Successfully removed ${filePath} from index`);
-    } catch (error) {
-      logError(`Error removing file ${filePath} from index`, error);
-    }
-  }
+	// Helper method to rescan all vault files
+	rescanVaultFiles() {
+		new Notice('Rescanning vault files for AI indexing...');
 
-  // Helper method to update debounce settings when file update frequency changes
-  updateDebounceSettings() {
-    // Recreate the debounced function with the new timing
-    const oldFunction = this.processPendingFileUpdates;
+		if (!globalEmbeddingStore) {
+			// // Initialize the embedding system if not done yet
+			logDebug(this.settings, 'Embedding system initializing. Please try again in a few seconds.');
+			return;
+		}
 
-    // Create new debounced function with updated settings
-    this.processPendingFileUpdates = createDebounce(() => {
-      const now = Date.now();
-      const filesToUpdate: string[] = [];
+		// Get all markdown files
+		const files = this.app.vault.getMarkdownFiles();
+		logDebug(this.settings, `Found ${files.length} markdown files to index`);
 
-      logDebug(this.settings, `Checking for files to update at ${new Date().toLocaleTimeString()}`);
-      logDebug(this.settings, `Current modified files queue: ${this.modifiedFiles.size} files`);
+		if (files.length === 0) {
+			new Notice('No markdown files found in your vault.');
+			return;
+		}
 
-      // Check if this is directly after initialization to prevent duplicate indexing
-      if (this.modifiedFiles.size > 0) {
-        // Find files that were modified more than the configured update frequency ago
-        const updateDelayMs = this.settings.fileUpdateFrequency * 1000; // Convert to milliseconds
+		// Create a custom notification for progress tracking
+		const progressNotice = new Notice('', 0);
+		const progressElement = progressNotice.noticeEl.createDiv();
+		progressElement.setText(`Indexing files: 0/${files.length}`);
 
-        this.modifiedFiles.forEach((timestamp, path) => {
-          const ageMs = now - timestamp;
-          const shouldUpdate = true; // Always update modified files
+		// Process files in batches to avoid UI blocking
+		let processedCount = 0;
+		const processFiles = (batch: TFile[], startIndex: number) => {
+			Promise.all(batch.map(async (file) => {
+				try {
+					const content = await this.app.vault.cachedRead(file);
 
-          logDebug(this.settings, `File ${path} modified ${Math.round(ageMs/1000)}s ago, should update: ${shouldUpdate}`);
+					// Skip empty or very short files
+					if (!content || content.trim().length < 50) {
+						logDebug(this.settings, `File ${file.path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
+						processedCount++;
+						return;
+					}
 
-          if (shouldUpdate) {
-            filesToUpdate.push(path);
-          }
-        });
+					await globalEmbeddingStore?.addNote(file, content);
+					processedCount++;
+				} catch (error) {
+					logError(`Error indexing file ${file.path}`, error);
+					processedCount++; // Still count as processed even if it fails
+				}
+			})).then(() => {
+				// Update notice with current progress
+				progressElement.setText(`Indexing files: ${processedCount}/${files.length}`);
 
-        // Process files that qualify for update
-        if (filesToUpdate.length > 0) {
-          logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
+				// Process next batch
+				const nextStartIndex = startIndex + batch.length;
+				if (nextStartIndex < files.length) {
+					const nextBatch = files.slice(nextStartIndex, nextStartIndex + 10);
+					setTimeout(() => processFiles(nextBatch, nextStartIndex), 50);
+				} else {
+					// Show completion notification
+					progressNotice.hide(); // Hide the progress notification
+					new Notice(`Completed indexing ${processedCount} files for AI search`, 3000);
+				}
+			});
+		};
 
-          filesToUpdate.forEach(path => {
-            // Remove from tracking
-            this.modifiedFiles.delete(path);
+		// Start processing files in batches of 10
+		const firstBatch = files.slice(0, 10);
+		processFiles(firstBatch, 0);
+	}
 
-            // Get the file and reindex
-            const file = this.app.vault.getAbstractFileByPath(path);
-            if (file instanceof TFile && file.extension === 'md') {
-              this.reindexFile(file);
-            } else {
-              logError(`File not found or not a markdown file: ${path}`);
-            }
-          });
-        } else {
-          logDebug(this.settings, 'No files need updating at this time');
-        }
-      } else {
-        logDebug(this.settings, 'No modified files in queue');
-      }
-    }, this.settings.fileUpdateFrequency * 1000 / 2, false); // Wait for half the update frequency
+	// Helper method to remove a file from the index
+	async removeFileFromIndex(filePath: string) {
+		if (!globalEmbeddingStore) {
+			logDebug(this.settings, "Embedding store not yet initialized, skipping removal");
+			return;
+		}
 
-    // Process any pending items with the old function
-    oldFunction?.flush();
-  }
+		try {
+			globalEmbeddingStore.removeNote(filePath);
+			logDebug(this.settings, `Successfully removed ${filePath} from index`);
+		} catch (error) {
+			logError(`Error removing file ${filePath} from index`, error);
+		}
+	}
 
-  // Helper method to check if initial indexing is still in progress
-  isInitialIndexingInProgress(): boolean {
-    return !isGloballyInitialized && globalInitializationPromise !== null;
-  }
+	// Helper method to update debounce settings when file update frequency changes
+	updateDebounceSettings() {
+		// Recreate the debounced function with the new timing
+		const oldFunction = this.processPendingFileUpdates;
 
-  // Calculate the check interval based on user settings with sensible defaults
-  getPeriodicCheckInterval(): number {
-    // The interval will be twice the user-defined file update frequency
-    return Math.max(30000, this.settings.fileUpdateFrequency * 2000); // At least 30 seconds
-  }
+		// Create new debounced function with updated settings
+		this.processPendingFileUpdates = createDebounce(() => {
+			const now = Date.now();
+			const filesToUpdate: string[] = [];
+
+			logDebug(this.settings, `Checking for files to update at ${new Date().toLocaleTimeString()}`);
+			logDebug(this.settings, `Current modified files queue: ${this.modifiedFiles.size} files`);
+
+			// Check if this is directly after initialization to prevent duplicate indexing
+			if (this.modifiedFiles.size > 0) {
+				// Find files that were modified more than the configured update frequency ago
+				const updateDelayMs = this.settings.fileUpdateFrequency * 1000; // Convert to milliseconds
+
+				this.modifiedFiles.forEach((timestamp, path) => {
+					const ageMs = now - timestamp;
+					const shouldUpdate = true; // Always update modified files
+
+					logDebug(this.settings, `File ${path} modified ${Math.round(ageMs/1000)}s ago, should update: ${shouldUpdate}`);
+
+					if (shouldUpdate) {
+						filesToUpdate.push(path);
+					}
+				});
+
+				// Process files that qualify for update
+				if (filesToUpdate.length > 0) {
+					logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
+
+					filesToUpdate.forEach(path => {
+						// Remove from tracking
+						this.modifiedFiles.delete(path);
+
+						// Get the file and reindex
+						const file = this.app.vault.getAbstractFileByPath(path);
+						if (file instanceof TFile && file.extension === 'md') {
+							this.reindexFile(file);
+						} else {
+							logError(`File not found or not a markdown file: ${path}`);
+						}
+					});
+				} else {
+					logDebug(this.settings, 'No files need updating at this time');
+				}
+			} else {
+				logDebug(this.settings, 'No modified files in queue');
+			}
+		}, this.settings.fileUpdateFrequency * 1000 / 2, false); // Wait for half the update frequency
+
+		// Process any pending items with the old function
+		oldFunction?.flush();
+	}
+
+	// Helper method to check if initial indexing is still in progress
+	isInitialIndexingInProgress(): boolean {
+		return !isGloballyInitialized && globalInitializationPromise !== null;
+	}
+
+	// Calculate the check interval based on user settings with sensible defaults
+	getPeriodicCheckInterval(): number {
+		// The interval will be twice the user-defined file update frequency
+		return Math.max(30000, this.settings.fileUpdateFrequency * 2000); // At least 30 seconds
+	}
 }

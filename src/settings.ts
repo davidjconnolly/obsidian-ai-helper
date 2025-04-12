@@ -10,6 +10,7 @@ export interface EmbeddingSettings {
   chunkSize: number;
   chunkOverlap: number;
   dimensions: number;
+  updateMode: 'onLoad' | 'onUpdate' | 'none';
 }
 
 export interface ChatSettings {
@@ -69,7 +70,8 @@ export const DEFAULT_SETTINGS: Settings = {
     localModel: 'all-MiniLM-L6-v2',
     chunkSize: 1000,
     chunkOverlap: 200,
-    dimensions: 384
+    dimensions: 384,
+    updateMode: 'onUpdate'
   },
   openChatOnStartup: false,
   debugMode: true,
@@ -338,6 +340,20 @@ export class AIHelperSettingTab extends PluginSettingTab {
           this.plugin.settings.embeddingSettings.dimensions = parseInt(value) || DEFAULT_SETTINGS.embeddingSettings.dimensions;
           await this.plugin.saveSettings();
         }));
+
+    new Setting(containerEl)
+      .setName('Embedding index update mode')
+      .setDesc('When should the embedding index be updated?')
+      .addDropdown(dropdown => dropdown
+        .addOption('onLoad', 'On Load')
+        .addOption('onUpdate', 'On Update')
+        .addOption('none', 'Manual Only')
+        .setValue(this.plugin.settings.embeddingSettings.updateMode)
+        .onChange(async (value) => {
+          this.plugin.settings.embeddingSettings.updateMode = value as 'onLoad' | 'onUpdate' | 'none';
+          await this.plugin.saveSettings();
+        })
+      );
 
     // Summarize Settings
     containerEl.createEl('h3', { text: 'Summarize Settings' });

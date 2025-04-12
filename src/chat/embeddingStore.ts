@@ -1,12 +1,28 @@
-import { TFile, requestUrl, RequestUrlParam } from 'obsidian';
+import { TFile, requestUrl, RequestUrlParam, App } from 'obsidian';
 import { Settings } from '../settings';
 import { VectorStore } from './vectorStore';
 import { NoteEmbedding } from '../chat';
 import { logDebug, logError } from '../utils';
-import { App, Notice } from 'obsidian';
+import { Notice } from 'obsidian';
 
 interface EmbeddingModel {
   embed: (text: string) => Promise<Float32Array>;
+}
+
+interface PersistedEmbeddingStore {
+    version: number;
+    lastUpdated: number;
+    embeddings: {
+        [path: string]: {
+            path: string;
+            chunks: {
+                content: string;
+                embedding: number[];
+                position: number;
+            }[];
+            lastModified: number;
+        };
+    };
 }
 
 // Static initialization state to track across instances
@@ -26,11 +42,13 @@ export class EmbeddingStore {
   private vectorStore: VectorStore;
   private embeddingModel: EmbeddingModel;
   private dimensions: number;
+  private app: App;
 
-  constructor(settings: Settings, vectorStore: VectorStore) {
+  constructor(settings: Settings, vectorStore: VectorStore, app: App) {
       this.settings = settings;
       this.vectorStore = vectorStore;
       this.dimensions = settings.embeddingSettings.dimensions;
+      this.app = app;
   }
 
   async initialize() {
@@ -379,12 +397,128 @@ export class EmbeddingStore {
   }
 
   // Helper method to validate note content before processing
-  private isValidContent(path: string, content: string): boolean {
+  public isValidContent(path: string, content: string): boolean {
       if (!content || content.trim().length < 50) {
           logDebug(this.settings, `File ${path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
           return false;
       }
       return true;
+  }
+
+  async saveToFile() {
+      try {
+          const data: PersistedEmbeddingStore = {
+              version: 1,
+              lastUpdated: Date.now(),
+              embeddings: Object.fromEntries(
+                  Array.from(this.embeddings.entries()).map(([path, embedding]) => [
+                      path,
+                      {
+                          ...embedding,
+                          chunks: embedding.chunks.map(chunk => ({
+                              ...chunk,
+                              embedding: Array.from(chunk.embedding)
+                          })),
+                          lastModified: (this.app.vault.getAbstractFileByPath(path) as TFile)?.stat?.mtime || Date.now()
+                      }
+                  ])
+              )
+          };
+          await this.app.vault.adapter.write(
+              '.obsidian/plugins/obsidian-ai-helper/embeddings.json',
+              JSON.stringify(data)
+          );
+          logDebug(this.settings, 'Successfully saved embeddings to file');
+      } catch (error) {
+          logError('Error saving embeddings to file', error);
+      }
+  }
+
+  async loadFromFile() {
+      try {
+          const data = JSON.parse(
+              await this.app.vault.adapter.read(
+                  '.obsidian/plugins/obsidian-ai-helper/embeddings.json'
+              )
+          ) as PersistedEmbeddingStore;
+
+          // Clear existing embeddings
+          this.embeddings.clear();
+          this.vectorStore.clear();
+
+          // Load embeddings
+          for (const [path, embedding] of Object.entries(data.embeddings)) {
+              const file = this.app.vault.getAbstractFileByPath(path);
+              if (file instanceof TFile) {
+                  // Check if file has been modified since last save
+                  if (file.stat.mtime > embedding.lastModified) {
+                      // File changed, needs reindexing
+                      const content = await this.app.vault.cachedRead(file);
+                      await this.addNote(file, content);
+                  } else {
+                      // File unchanged, load from cache
+                      const noteEmbedding: NoteEmbedding = {
+                          path: embedding.path,
+                          chunks: embedding.chunks.map(chunk => ({
+                              ...chunk,
+                              embedding: new Float32Array(chunk.embedding)
+                          }))
+                      };
+                      this.embeddings.set(path, noteEmbedding);
+                      this.vectorStore.addEmbedding(path, noteEmbedding);
+                  }
+              }
+          }
+          logDebug(this.settings, 'Successfully loaded embeddings from file');
+      } catch (error) {
+          logError('Error loading embeddings from file', error);
+          // If load fails, reindex everything
+          await this.reindexAll();
+      }
+  }
+
+  private async reindexAll() {
+      const files = this.app.vault.getMarkdownFiles();
+      logDebug(this.settings, `Reindexing all ${files.length} files`);
+
+      // Show progress notice for reindexing
+      const progressNotice = new Notice('', 0);
+      const progressElement = progressNotice.noticeEl.createDiv();
+      progressElement.setText('Initializing index...');
+
+      try {
+          let processedCount = 0;
+          for (const file of files) {
+              try {
+                  const content = await this.app.vault.cachedRead(file);
+                  if (this.isValidContent(file.path, content)) {
+                      await this.addNote(file, content);
+                  }
+                  processedCount++;
+                  progressElement.setText(
+                      `Indexing files: ${processedCount}/${files.length} (${file.path})`
+                  );
+              } catch (error) {
+                  logError(`Error reindexing file ${file.path}`, error);
+              }
+          }
+
+          // Save the embeddings after reindexing
+          await this.saveToFile();
+
+          // Show completion notice
+          new Notice(`Indexing complete: ${processedCount} files processed`, 3000);
+      } finally {
+          progressNotice.hide();
+      }
+  }
+
+  getEmbeddedPaths(): string[] {
+      return Array.from(this.embeddings.keys());
+  }
+
+  getEmbedding(path: string): NoteEmbedding | undefined {
+      return this.embeddings.get(path);
   }
 }
 
@@ -404,7 +538,7 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
     }
 
     if (!globalEmbeddingStore) {
-        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore);
+        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore, app);
     }
 
     // Start the initialization process asynchronously
@@ -412,76 +546,108 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
         try {
             await globalEmbeddingStore.initialize();
 
-            // Index all markdown files
-            const files = app.vault.getMarkdownFiles();
-            logDebug(settings, `Starting to index ${files.length} notes for vector search`);
+            // Load cached embeddings first
+            await globalEmbeddingStore.loadFromFile();
 
-            if (files.length === 0) {
-                logError("No markdown files found in the vault. This is unexpected.");
-
-                // Add a more detailed log to help diagnose the issue
-                try {
-                    const allFiles = app.vault.getAllLoadedFiles();
-                    logDebug(settings, `Total files in vault: ${allFiles.length}`);
-                    if (allFiles.length > 0) {
-                        logDebug(settings, `Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
-                    }
-                } catch (e) {
-                    logError("Error inspecting vault files", e);
-                }
+            // Only scan for changes if in onLoad or onUpdate mode
+            if (['onLoad', 'onUpdate'].includes(settings.embeddingSettings.updateMode)) {
+                // Scan for changes and update as needed
+                await scanForChanges(app, settings, true);
             }
 
-            // Create a custom notification for progress tracking if debug mode is enabled
-            let progressNotice: Notice | null = null;
-            let progressElement: HTMLElement | null = null;
-
-            progressNotice = new Notice('', 0);
-            progressElement = progressNotice.noticeEl.createDiv();
-            progressElement.setText(`Indexing notes: 0/${files.length}`);
-
-            let processedCount = 0;
-            for (const file of files) {
-                try {
-                    logDebug(settings, `Processing file: ${file.path}`);
-                    const content = await app.vault.cachedRead(file);
-                    await globalEmbeddingStore.addNote(file, content);
-
-                    // Update progress notification
-                    processedCount++;
-                    if (progressElement) {
-                        progressElement.setText(`Indexing notes: ${processedCount}/${files.length}`);
-                    }
-                } catch (error) {
-                    logError(`Error indexing note ${file.path}`, error);
-                }
-            }
-
-            // Show completion notification
-            if (progressNotice) {
-                progressNotice.hide(); // Hide the progress notification
-                new Notice(`Indexed ${files.length} notes for vector search`, 3000);
-            }
-
-            logDebug(settings, `Indexed ${files.length} notes for vector search`);
             isGloballyInitialized = true;
 
             // Dispatch a custom event that the plugin can listen for
-            // to trigger processing of any pending file updates
             logDebug(settings, "Embedding initialization complete");
-
-            // Create custom event with payload indicating this is initial indexing
             const event = new CustomEvent('ai-helper-indexing-complete', {
                 detail: { isInitialIndexing: true }
             });
             document.dispatchEvent(event);
             logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
-
         } catch (error) {
             logError('Error initializing vector search', error);
-            // Use console error instead of Notice to avoid UI blocking
             logError('Error initializing vector search. Some features may not work correctly.');
         }
     })();
 
     return globalInitializationPromise;
+}
+
+async function scanForChanges(app: App, settings: Settings, isInitialLoad: boolean = false): Promise<void> {
+    // Don't scan if update mode is 'none'
+    if (settings.embeddingSettings.updateMode === 'none') return;
+
+    // Don't scan for changes if in 'onLoad' mode and this isn't the initial load
+    if (settings.embeddingSettings.updateMode === 'onLoad' && !isInitialLoad) return;
+
+    if (!globalEmbeddingStore) return;
+
+    const files = app.vault.getMarkdownFiles();
+    const changedFiles = [];
+    const deletedPaths = new Set<string>();
+
+    // First, identify deleted files by comparing cached paths with existing files
+    const existingPaths = new Set(files.map(f => f.path));
+    for (const cachedPath of globalEmbeddingStore.getEmbeddedPaths()) {
+        if (!existingPaths.has(cachedPath)) {
+            deletedPaths.add(cachedPath);
+        }
+    }
+
+    // Then identify modified files
+    for (const file of files) {
+        const content = await app.vault.cachedRead(file);
+        // Skip files that are too small
+        if (!globalEmbeddingStore.isValidContent(file.path, content)) {
+            continue;
+        }
+        const cached = globalEmbeddingStore.getEmbedding(file.path);
+        if (!cached || file.stat.mtime > (cached as any).lastModified) {
+            changedFiles.push(file);
+        }
+    }
+
+    let totalChanges = changedFiles.length + deletedPaths.size;
+    if (totalChanges > 0) {
+        // Show progress for handling all changes
+        const progressNotice = new Notice('', 0);
+        const progressElement = progressNotice.noticeEl.createDiv();
+        let processedCount = 0;
+
+        // Remove deleted files from both memory and persisted store
+        for (const deletedPath of deletedPaths) {
+            globalEmbeddingStore.removeNote(deletedPath);
+            processedCount++;
+            progressElement.setText(
+                `Updating index: ${processedCount}/${totalChanges} (Removing deleted files)`
+            );
+        }
+
+        // Update modified files
+        for (const file of changedFiles) {
+            progressElement.setText(
+                `Updating index: ${processedCount + 1}/${totalChanges} (Processing ${file.path})`
+            );
+            const content = await app.vault.cachedRead(file);
+            await globalEmbeddingStore.addNote(file, content);
+            processedCount++;
+        }
+
+        progressNotice.hide();
+
+        // Save updated embeddings after all changes are processed
+        await globalEmbeddingStore.saveToFile();
+
+        // Show summary of changes
+        const deletedCount = deletedPaths.size;
+        const modifiedCount = changedFiles.length;
+        let summaryMessage = [];
+        if (modifiedCount > 0) summaryMessage.push(`updated ${modifiedCount} files`);
+        if (deletedCount > 0) summaryMessage.push(`removed ${deletedCount} deleted files`);
+
+        new Notice(
+            `Index update complete: ${summaryMessage.join(', ')}`,
+            3000
+        );
+    }
 }

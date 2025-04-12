@@ -23,6 +23,8 @@ export interface ChatSettings {
   temperature: number;
   maxNotesToSearch: number;
   displayWelcomeMessage: boolean;
+  similarity: number;
+  maxContextLength: number;
 }
 
 export interface SummarizeSettings {
@@ -56,6 +58,8 @@ export const DEFAULT_SETTINGS: Settings = {
     temperature: 0.7,
     maxNotesToSearch: 20,
     displayWelcomeMessage: true,
+    similarity: 0.5,
+    maxContextLength: 4000,
   },
   embeddingSettings: {
     provider: 'openai',
@@ -177,7 +181,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter max tokens')
         .setValue(this.plugin.settings.chatSettings.maxTokens.toString())
         .onChange(async (value) => {
-          this.plugin.settings.chatSettings.maxTokens = parseInt(value) || 500;
+          this.plugin.settings.chatSettings.maxTokens = parseInt(value) || DEFAULT_SETTINGS.chatSettings.maxTokens;
           await this.plugin.saveSettings();
         }));
 
@@ -188,28 +192,53 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter temperature')
         .setValue(this.plugin.settings.chatSettings.temperature.toString())
         .onChange(async (value) => {
-          this.plugin.settings.chatSettings.temperature = parseFloat(value) || 0.7;
+          this.plugin.settings.chatSettings.temperature = parseFloat(value) || DEFAULT_SETTINGS.chatSettings.temperature;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName('Max Notes to Search')
+      .setName('Max notes to search')
       .setDesc('Maximum number of notes to search for context')
       .addText(text => text
         .setPlaceholder('Enter max notes')
         .setValue(this.plugin.settings.chatSettings.maxNotesToSearch.toString())
         .onChange(async (value) => {
-          this.plugin.settings.chatSettings.maxNotesToSearch = parseInt(value) || 20;
+          this.plugin.settings.chatSettings.maxNotesToSearch = parseInt(value) || DEFAULT_SETTINGS.chatSettings.maxNotesToSearch;
           await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
-      .setName('Display Welcome Message')
+      .setName('Similarity threshold')
+      .setDesc('Threshold for semantic search similarity (0.0 to 1.0). Lower values return more results but may be less relevant.')
+      .addText(text => text
+        .setPlaceholder('Enter similarity threshold')
+        .setValue(this.plugin.settings.chatSettings.similarity.toString())
+        .onChange(async (value) => {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+            this.plugin.settings.chatSettings.similarity = parsed || DEFAULT_SETTINGS.chatSettings.similarity;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName('Display welcome message')
       .setDesc('Show a welcome message when opening the chat or after reset')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.chatSettings.displayWelcomeMessage)
         .onChange(async (value) => {
           this.plugin.settings.chatSettings.displayWelcomeMessage = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Max context length')
+      .setDesc('Maximum number of characters to include in the context')
+      .addText(text => text
+        .setPlaceholder('Enter max context length')
+        .setValue(this.plugin.settings.chatSettings.maxContextLength.toString())
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.chatSettings.maxContextLength;
           await this.plugin.saveSettings();
         }));
 
@@ -284,7 +313,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter chunk size')
         .setValue(this.plugin.settings.embeddingSettings.chunkSize.toString())
         .onChange(async (value) => {
-          this.plugin.settings.embeddingSettings.chunkSize = parseInt(value) || 1000;
+          this.plugin.settings.embeddingSettings.chunkSize = parseInt(value) || DEFAULT_SETTINGS.embeddingSettings.chunkSize;
           await this.plugin.saveSettings();
         }));
 
@@ -295,7 +324,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter chunk overlap')
         .setValue(this.plugin.settings.embeddingSettings.chunkOverlap.toString())
         .onChange(async (value) => {
-          this.plugin.settings.embeddingSettings.chunkOverlap = parseInt(value) || 200;
+          this.plugin.settings.embeddingSettings.chunkOverlap = parseInt(value) || DEFAULT_SETTINGS.embeddingSettings.chunkOverlap;
           await this.plugin.saveSettings();
         }));
 
@@ -306,7 +335,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter dimensions')
         .setValue(this.plugin.settings.embeddingSettings.dimensions.toString())
         .onChange(async (value) => {
-          this.plugin.settings.embeddingSettings.dimensions = parseInt(value) || 384;
+          this.plugin.settings.embeddingSettings.dimensions = parseInt(value) || DEFAULT_SETTINGS.embeddingSettings.dimensions;
           await this.plugin.saveSettings();
         }));
 
@@ -381,7 +410,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter max tokens')
         .setValue(this.plugin.settings.summarizeSettings.maxTokens.toString())
         .onChange(async (value) => {
-          this.plugin.settings.summarizeSettings.maxTokens = parseInt(value) || 500;
+          this.plugin.settings.summarizeSettings.maxTokens = parseInt(value) || DEFAULT_SETTINGS.summarizeSettings.maxTokens;
           await this.plugin.saveSettings();
         }));
 
@@ -392,7 +421,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter temperature')
         .setValue(this.plugin.settings.summarizeSettings.temperature.toString())
         .onChange(async (value) => {
-          this.plugin.settings.summarizeSettings.temperature = parseFloat(value) || 0.7;
+          this.plugin.settings.summarizeSettings.temperature = parseFloat(value) || DEFAULT_SETTINGS.summarizeSettings.temperature;
           await this.plugin.saveSettings();
         }));
 
@@ -426,7 +455,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setPlaceholder('Enter update frequency')
         .setValue(this.plugin.settings.fileUpdateFrequency.toString())
         .onChange(async (value) => {
-          this.plugin.settings.fileUpdateFrequency = parseInt(value) || 30;
+          this.plugin.settings.fileUpdateFrequency = parseInt(value) || DEFAULT_SETTINGS.fileUpdateFrequency;
           await this.plugin.saveSettings();
         }));
   }

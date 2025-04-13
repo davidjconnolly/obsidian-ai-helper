@@ -436,10 +436,17 @@ export class EmbeddingStore {
 
   async loadFromFile() {
       try {
+          const filePath = '.obsidian/plugins/obsidian-ai-helper/embeddings.json';
+
+          // Check if file exists first
+          const exists = await this.app.vault.adapter.exists(filePath);
+          if (!exists) {
+              logDebug(this.settings, 'No existing embeddings file found. Starting with empty index.');
+              return;
+          }
+
           const data = JSON.parse(
-              await this.app.vault.adapter.read(
-                  '.obsidian/plugins/obsidian-ai-helper/embeddings.json'
-              )
+              await this.app.vault.adapter.read(filePath)
           ) as PersistedEmbeddingStore;
 
           // Clear existing embeddings
@@ -471,9 +478,15 @@ export class EmbeddingStore {
           }
           logDebug(this.settings, 'Successfully loaded embeddings from file');
       } catch (error) {
-          logError('Error loading embeddings from file', error);
-          // If load fails, reindex everything
-          await this.reindexAll();
+          // Only log as debug since this is expected on first run
+          if (error.code === 'ENOENT') {
+              logDebug(this.settings, 'No existing embeddings file found. Starting with empty index.');
+          } else {
+              // For other errors, log as error and reindex
+              logError('Error loading embeddings from file', error);
+              // If load fails for other reasons, reindex everything
+              await this.reindexAll();
+          }
       }
   }
 

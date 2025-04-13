@@ -99,10 +99,8 @@ export class AIHelperSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'AI Helper Settings' });
-
     // Chat Settings
-    containerEl.createEl('h3', { text: 'Chat Settings' });
+    containerEl.createEl('h3', { text: 'Chat settings' });
 
     new Setting(containerEl)
       .setName('Provider')
@@ -121,7 +119,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
 
     if (this.plugin.settings.chatSettings.provider === 'openai') {
       new Setting(containerEl)
-        .setName('OpenAI API Key')
+        .setName('OpenAI API key')
         .setDesc('Your OpenAI API key')
         .addText(text => text
           .setPlaceholder('Enter your OpenAI API key')
@@ -132,7 +130,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           }));
 
       new Setting(containerEl)
-        .setName('OpenAI Model')
+        .setName('OpenAI model')
         .setDesc('The model to use for chat')
         .addText(text => text
           .setPlaceholder('Enter model name')
@@ -165,7 +163,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           }));
 
       new Setting(containerEl)
-        .setName('Local Model')
+        .setName('Local model')
         .setDesc('The model to use for chat')
         .addText(text => text
           .setPlaceholder('Enter model name')
@@ -177,7 +175,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName('Max Tokens')
+      .setName('Max tokens')
       .setDesc('Maximum number of tokens to generate')
       .addText(text => text
         .setPlaceholder('Enter max tokens')
@@ -264,7 +262,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
 
     if (this.plugin.settings.embeddingSettings.provider === 'openai') {
       new Setting(containerEl)
-        .setName('OpenAI Model')
+        .setName('OpenAI model')
         .setDesc('The model to use for embeddings')
         .addText(text => text
           .setPlaceholder('Enter model name')
@@ -297,7 +295,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           }));
 
       new Setting(containerEl)
-        .setName('Local Model')
+        .setName('Local model')
         .setDesc('The model to use for embeddings')
         .addText(text => text
           .setPlaceholder('Enter model name')
@@ -309,7 +307,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName('Chunk Size')
+      .setName('Chunk size')
       .setDesc('Size of text chunks for embedding')
       .addText(text => text
         .setPlaceholder('Enter chunk size')
@@ -320,7 +318,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Chunk Overlap')
+      .setName('Chunk overlap')
       .setDesc('Overlap between text chunks')
       .addText(text => text
         .setPlaceholder('Enter chunk overlap')
@@ -343,7 +341,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Embedding index update mode')
-      .setDesc('When should the embedding index be updated?')
+      .setDesc('When should the embedding index be updated? *Requires application restart to take effect*')
       .addDropdown(dropdown => dropdown
         .addOption('onLoad', 'On Load')
         .addOption('onUpdate', 'On Update')
@@ -352,8 +350,18 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.embeddingSettings.updateMode = value as 'onLoad' | 'onUpdate' | 'none';
           await this.plugin.saveSettings();
-        })
-      );
+        }));
+
+    new Setting(containerEl)
+      .setName('File update frequency')
+      .setDesc('Time in seconds before reindexing modified files')
+      .addText(text => text
+        .setPlaceholder('Enter update frequency')
+        .setValue(this.plugin.settings.fileUpdateFrequency.toString())
+        .onChange(async (value) => {
+          this.plugin.settings.fileUpdateFrequency = parseInt(value) || DEFAULT_SETTINGS.fileUpdateFrequency;
+          await this.plugin.saveSettings();
+        }));
 
     // Summarize Settings
     containerEl.createEl('h3', { text: 'Summarize Settings' });
@@ -375,7 +383,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
 
     if (this.plugin.settings.summarizeSettings.provider === 'openai') {
       new Setting(containerEl)
-        .setName('OpenAI Model')
+        .setName('OpenAI model')
         .setDesc('The model to use for summarization')
         .addText(text => text
           .setPlaceholder('Enter model name')
@@ -408,7 +416,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
           }));
 
       new Setting(containerEl)
-        .setName('Local Model')
+        .setName('Local model')
         .setDesc('The model to use for summarization')
         .addText(text => text
           .setPlaceholder('Enter model name')
@@ -420,7 +428,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
-      .setName('Max Tokens')
+      .setName('Max tokens')
       .setDesc('Maximum number of tokens to generate')
       .addText(text => text
         .setPlaceholder('Enter max tokens')
@@ -445,7 +453,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
     containerEl.createEl('h3', { text: 'General Settings' });
 
     new Setting(containerEl)
-      .setName('Open Chat on Startup')
+      .setName('Open  chat on startup')
       .setDesc('Automatically open chat when Obsidian starts')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.openChatOnStartup)
@@ -455,23 +463,12 @@ export class AIHelperSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
-      .setName('Debug Mode')
+      .setName('Debug mode')
       .setDesc('Enable debug logging')
       .addToggle(toggle => toggle
         .setValue(this.plugin.settings.debugMode)
         .onChange(async (value) => {
           this.plugin.settings.debugMode = value;
-          await this.plugin.saveSettings();
-        }));
-
-    new Setting(containerEl)
-      .setName('File Update Frequency')
-      .setDesc('Time in seconds before reindexing modified files')
-      .addText(text => text
-        .setPlaceholder('Enter update frequency')
-        .setValue(this.plugin.settings.fileUpdateFrequency.toString())
-        .onChange(async (value) => {
-          this.plugin.settings.fileUpdateFrequency = parseInt(value) || DEFAULT_SETTINGS.fileUpdateFrequency;
           await this.plugin.saveSettings();
         }));
   }

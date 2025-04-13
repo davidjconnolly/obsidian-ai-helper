@@ -10,6 +10,9 @@ import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
 
+// Define welcome message
+const WELCOME_MESSAGE = "Hello! I'm your AI helper. I can help you explore your notes. Ask me anything about your notes!";
+
 // Interface for a chat message
 export interface ChatMessage {
     role: 'system' | 'user' | 'assistant';
@@ -140,7 +143,7 @@ export class AIHelperChatView extends ItemView {
 
         // Add welcome message if enabled in settings
         if (this.settings.chatSettings.displayWelcomeMessage) {
-            this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+            this.addAssistantMessage(WELCOME_MESSAGE);
         }
     }
 
@@ -148,14 +151,10 @@ export class AIHelperChatView extends ItemView {
         // Create main content area
         const mainContent = container.createDiv({ cls: 'ai-helper-chat-main' });
 
-        // Create header
-        const headerSection = mainContent.createDiv({ cls: 'ai-helper-chat-header' });
-        headerSection.createEl('h3', { text: 'AI Assistant' });
-
         // Create context section for relevant notes
         const contextSection = mainContent.createDiv({ cls: 'ai-helper-context-section' });
         const contextHeader = contextSection.createDiv({ cls: 'ai-helper-context-header' });
-        contextHeader.setText('Relevant Notes');
+        contextHeader.setText('Relevant notes');
         this.contextContainer = contextSection.createDiv({ cls: 'ai-helper-context-notes' });
 
         // Create messages container
@@ -494,7 +493,7 @@ If you're not sure about something, say so clearly.`;
 
         // Add welcome message if enabled in settings
         if (this.settings.chatSettings.displayWelcomeMessage) {
-            this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+            this.addAssistantMessage(WELCOME_MESSAGE);
         }
     }
 }

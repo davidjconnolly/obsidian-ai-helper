@@ -76,6 +76,7 @@ export class AIHelperChatView extends ItemView {
     private llmConnector: LLMConnector;
     private isProcessing = false;
     private initializationPromise: Promise<void> | null = null;
+    private abortController: AbortController | null = null;
 
     constructor(leaf: WorkspaceLeaf, settings: Settings) {
         super(leaf);
@@ -325,6 +326,10 @@ export class AIHelperChatView extends ItemView {
         const message = this.inputField.value.trim();
         if (!message || this.isProcessing) return;
 
+        // Create new AbortController for this operation
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
+
         // Set processing state
         this.setProcessingState(true);
 
@@ -351,16 +356,19 @@ export class AIHelperChatView extends ItemView {
             this.displayContextNotes();
 
             // Generate response using the found notes
-            const response = await this.generateResponse(message);
+            const response = await this.generateResponse(message, signal);
 
             // Add assistant response to chat
             this.addAssistantMessage(response.content);
         } catch (error) {
-            logError('Error processing message', error);
-            this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+            if (error.name !== 'AbortError') {
+                logError('Error processing message', error);
+                this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+            }
         } finally {
             // Reset processing state
             this.setProcessingState(false);
+            this.abortController = null;
         }
     }
 
@@ -373,10 +381,11 @@ export class AIHelperChatView extends ItemView {
             logDebug(this.settings, 'Generated query embedding');
 
             // Extract key terms for title matching
+            const commonShortWords = new Set(['a', 'an', 'and', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'up', 'by', 'as']);
             const searchTerms = query
                 .toLowerCase()
                 .split(/\s+/)
-                .filter(term => term.length > 3)
+                .filter(term => term.length >= 3 && !commonShortWords.has(term)) // Filter common words and words under 3 characters
                 .map(term => term.replace(/[^\w\s]/g, ''));
             logDebug(this.settings, `Search terms: ${JSON.stringify(searchTerms)}`);
 
@@ -450,7 +459,7 @@ export class AIHelperChatView extends ItemView {
         }
     }
 
-    async generateResponse(userQuery: string): Promise<ChatMessage> {
+    async generateResponse(userQuery: string, signal?: AbortSignal): Promise<ChatMessage> {
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
             return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
@@ -477,19 +486,37 @@ If you're not sure about something, say so clearly.`;
         messages.unshift({ role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` });
 
         // Send to LLM for processing
-        const response = await this.llmConnector.generateResponse(messages);
+        const response = await this.llmConnector.generateResponse(messages, signal);
         return response;
     }
 
     // Add a method to reset the chat
-    resetChat() {
-        // Clear messages
+    async resetChat() {
+        // If there's an in-progress query, cancel it using AbortController
+        if (this.isProcessing && this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+
+        // Clear messages and message history
         this.messages = [];
         this.messagesContainer.empty();
 
         // Clear relevant notes
         this.relevantNotes = [];
         this.displayContextNotes();
+
+        // Reset input field
+        this.inputField.value = '';
+        this.inputField.disabled = false;
+        this.inputField.placeholder = 'Ask about your notes...';
+
+        // Reset send button
+        this.sendButton.setButtonText('Send');
+        this.sendButton.buttonEl.disabled = false;
+
+        // Reset processing state
+        this.setProcessingState(false);
 
         // Add welcome message if enabled in settings
         if (this.settings.chatSettings.displayWelcomeMessage) {

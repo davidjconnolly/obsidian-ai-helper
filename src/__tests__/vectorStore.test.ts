@@ -377,4 +377,64 @@ describe('VectorStore', () => {
             expect(result).toBeNull();
         });
     });
+
+    describe('calculateTermMatchScore', () => {
+        it('should calculate higher scores for exact matches', async () => {
+            const content = "This is a test document about running and jumping. Runners and jumpers should read this.";
+
+            // @ts-ignore - accessing private method for testing
+            const score1 = vectorStore['calculateTermMatchScore'](content, ['running', 'jumping']);
+            // @ts-ignore - accessing private method for testing
+            const score2 = vectorStore['calculateTermMatchScore'](content, ['unknown', 'terms']);
+
+            expect(score1).toBeGreaterThan(0);
+            expect(score2).toBe(0);
+        });
+
+        it('should handle empty or undefined terms', async () => {
+            const content = "This is a test document.";
+
+            // @ts-ignore - accessing private method for testing
+            const score1 = vectorStore['calculateTermMatchScore'](content, []);
+            // @ts-ignore - accessing private method for testing
+            const score2 = vectorStore['calculateTermMatchScore'](content, undefined);
+
+            expect(score1).toBe(0);
+            expect(score2).toBe(0);
+        });
+
+        it('should score word boundary matches higher than partial matches', async () => {
+            const content = "This is a test document about running.";
+
+            // @ts-ignore - accessing private method for testing
+            const exactScore = vectorStore['calculateTermMatchScore'](content, ['running']);
+            // @ts-ignore - accessing private method for testing
+            const partialScore = vectorStore['calculateTermMatchScore'](content, ['run']);
+
+            expect(exactScore).toBeGreaterThan(partialScore);
+        });
+    });
+
+    describe('calculatePhraseMatchScore', () => {
+        it('should score exact phrases', async () => {
+            const content = "This is a test document about artificial intelligence and machine learning.";
+
+            // @ts-ignore - accessing private method for testing
+            const score = vectorStore['calculatePhraseMatchScore'](content, ['artificial intelligence']);
+
+            expect(score).toBeGreaterThan(0);
+        });
+
+        it('should handle multiple phrase matches', async () => {
+            const content = "Artificial intelligence and machine learning can help with natural language processing.";
+
+            // @ts-ignore - accessing private method for testing
+            const score = vectorStore['calculatePhraseMatchScore'](
+                content,
+                ['artificial intelligence', 'machine learning', 'natural language processing']
+            );
+
+            expect(score).toBeGreaterThan(0);
+        });
+    });
 });

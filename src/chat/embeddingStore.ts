@@ -4,6 +4,7 @@ import { VectorStore } from './vectorStore';
 import { NoteEmbedding } from '../chat';
 import { logDebug, logError } from '../utils';
 import { Notice } from 'obsidian';
+import { processQuery } from '../nlp';
 
 interface EmbeddingModel {
   embed: (text: string) => Promise<Float32Array>;
@@ -202,28 +203,68 @@ export class EmbeddingStore {
   }
 
   async generateEmbedding(text: string): Promise<Float32Array> {
-      try {
-          if (!this.embeddingModel) {
-              throw new Error('Embedding model not initialized');
-          }
+    // Apply the same processing to text being embedded as we do to queries
+    // This ensures consistency between query and document processing
+    const processed = typeof text === 'string' ? text : '';
 
-          // Check provider-specific requirements before attempting to generate embeddings
-          if (this.settings.embeddingSettings.provider === 'openai' && !this.settings.embeddingSettings.openaiApiKey) {
-              throw new Error('OpenAI API key is missing. Please configure it in the settings.');
-          } else if (this.settings.embeddingSettings.provider === 'local' && !this.settings.embeddingSettings.localApiUrl) {
-              throw new Error('Local API URL is missing. Please configure it in the settings.');
-          }
+    try {
+      // For embedding generation, we don't need the full query processing with expansion,
+      // but we want consistent stemming and stopword removal
+      const processedText = processQuery(processed, this.settings).processed;
 
-          const embedding = await this.embeddingModel.embed(text);
-          if (!embedding || !(embedding instanceof Float32Array)) {
-              throw new Error('Invalid embedding generated');
-          }
-          return embedding;
-      } catch (error) {
-          logError('Error generating embedding', error);
-          // Re-throw the error with a clear message
-          throw new Error(`Failed to generate embedding: ${error.message}`);
+      if (this.settings.embeddingSettings.provider === 'openai') {
+        return await this.generateOpenAIEmbedding(processedText);
+      } else {
+        return await this.generateLocalEmbedding(processedText);
       }
+    } catch (error) {
+      console.error('Error generating embedding:', error);
+      throw error;
+    }
+  }
+
+  // Generate embedding using OpenAI API
+  private async generateOpenAIEmbedding(text: string): Promise<Float32Array> {
+    try {
+      if (!this.embeddingModel) {
+        throw new Error('Embedding model not initialized');
+      }
+
+      if (!this.settings.embeddingSettings.openaiApiKey) {
+        throw new Error('OpenAI API key is missing. Please configure it in the settings.');
+      }
+
+      const embedding = await this.embeddingModel.embed(text);
+      if (!embedding || !(embedding instanceof Float32Array)) {
+        throw new Error('Invalid embedding generated from OpenAI');
+      }
+      return embedding;
+    } catch (error) {
+      logError('Error generating OpenAI embedding', error);
+      throw new Error(`Failed to generate OpenAI embedding: ${error.message}`);
+    }
+  }
+
+  // Generate embedding using local API
+  private async generateLocalEmbedding(text: string): Promise<Float32Array> {
+    try {
+      if (!this.embeddingModel) {
+        throw new Error('Embedding model not initialized');
+      }
+
+      if (!this.settings.embeddingSettings.localApiUrl) {
+        throw new Error('Local API URL is missing. Please configure it in the settings.');
+      }
+
+      const embedding = await this.embeddingModel.embed(text);
+      if (!embedding || !(embedding instanceof Float32Array)) {
+        throw new Error('Invalid embedding generated from local provider');
+      }
+      return embedding;
+    } catch (error) {
+      logError('Error generating local embedding', error);
+      throw new Error(`Failed to generate local embedding: ${error.message}`);
+    }
   }
 
   private chunkContent(content: string): { content: string; position: number }[] {

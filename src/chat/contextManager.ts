@@ -1,6 +1,7 @@
 import { NoteWithContent } from "src/chat";
 import { VectorStore, NoteChunk } from "./vectorStore";
 import { Settings } from "src/settings";
+import { processQuery } from '../nlp';
 
 export class ContextManager {
   private vectorStore: VectorStore;
@@ -51,27 +52,35 @@ export class ContextManager {
     // Get all chunks and find relevant ones using the same scoring logic
     const allChunks = this.vectorStore.getAllChunks(note.file.path);
     if (allChunks && allChunks.length > 0) {
-        // Extract keywords from query
-        const keywords = query.toLowerCase()
-            .replace(/[^\w\s]/g, '')
-            .split(/\s+/)
-            .filter(word => word.length > 3);
+        // Process the query using our NLP utilities
+        const processedQuery = processQuery(query, this.settings);
+        const { tokens, expandedTokens, phrases } = processedQuery;
 
-        // Score chunks based on keyword matches
+        // Score chunks based on keyword and phrase matches
         const scoredChunks = allChunks.map(chunk => {
             const lowerContent = chunk.content.toLowerCase();
             let score = 0;
 
-            // Count keyword matches
-            for (const keyword of keywords) {
-                const regex = new RegExp(`\\b${keyword}\\b`, 'g');
+            // Count expanded token matches
+            for (const token of expandedTokens) {
+                // Skip phrases
+                if (token.includes(' ')) continue;
+
+                const regex = new RegExp(`\\b${token}\\b`, 'g');
                 const matches = (lowerContent.match(regex) || []).length;
-                score += matches * 2; // Weight exact matches more heavily
+                score += matches * 1.5; // Weight exact matches more heavily
 
                 // Also count partial matches
-                if (lowerContent.includes(keyword)) {
+                if (lowerContent.includes(token)) {
                     score += 1;
                 }
+            }
+
+            // Count phrase matches with higher weight
+            for (const phrase of phrases) {
+                const phraseRegex = new RegExp(phrase.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+                const phraseMatches = (lowerContent.match(phraseRegex) || []).length;
+                score += phraseMatches * 3; // Weight phrase matches even higher
             }
 
             return { chunk, score };
@@ -101,27 +110,35 @@ export class ContextManager {
           return content;
       }
 
-      // Extract keywords from query
-      const keywords = query.toLowerCase()
-          .replace(/[^\w\s]/g, '')
-          .split(/\s+/)
-          .filter(word => word.length > 3); // Filter out short words
+      // Process the query using our NLP utilities
+      const processedQuery = processQuery(query, this.settings);
+      const { tokens, expandedTokens, phrases } = processedQuery;
 
       // Score paragraphs based on keyword matches
       const scoredParagraphs = paragraphs.map((paragraph, index) => {
           const lowerParagraph = paragraph.toLowerCase();
           let score = 0;
 
-          // Count keyword matches
-          for (const keyword of keywords) {
-              const regex = new RegExp(`\\b${keyword}\\b`, 'g');
+          // Count expanded token matches
+          for (const token of expandedTokens) {
+              // Skip phrases
+              if (token.includes(' ')) continue;
+
+              const regex = new RegExp(`\\b${token}\\b`, 'g');
               const matches = (lowerParagraph.match(regex) || []).length;
-              score += matches * 2; // Weight exact matches more heavily
+              score += matches * 1.5; // Weight exact matches more heavily
 
               // Also count partial matches
-              if (lowerParagraph.includes(keyword)) {
+              if (lowerParagraph.includes(token)) {
                   score += 1;
               }
+          }
+
+          // Count phrase matches with higher weight
+          for (const phrase of phrases) {
+              const phraseRegex = new RegExp(phrase.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+              const phraseMatches = (lowerParagraph.match(phraseRegex) || []).length;
+              score += phraseMatches * 3; // Weight phrase matches even higher
           }
 
           // Boost score for paragraphs near the beginning (title, introduction)

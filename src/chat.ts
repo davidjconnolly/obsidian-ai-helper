@@ -6,6 +6,7 @@ import { EmbeddingStore } from './chat/embeddingStore';
 import { ContextManager } from './chat/contextManager';
 import { LLMConnector } from './chat/llmConnector';
 import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
+import { processQuery } from './nlp';
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
@@ -383,29 +384,26 @@ export class AIHelperChatView extends ItemView {
         try {
             logDebug(this.settings, `Starting search for query: ${query}`);
 
-            // Generate embedding for the query
-            const queryEmbedding = await this.embeddingStore.generateEmbedding(query);
-            logDebug(this.settings, 'Generated query embedding');
+            // Process the query using our NLP utilities
+            const processedQuery = processQuery(query, this.settings);
+            logDebug(this.settings, `Processed query: ${JSON.stringify(processedQuery)}`);
 
-            // Extract key terms for title matching
-            const commonShortWords = new Set(['a', 'an', 'and', 'the', 'in', 'on', 'at', 'to', 'for', 'of', 'up', 'by', 'as']);
-            const searchTerms = query
-                .toLowerCase()
-                .split(/\s+/)
-                .filter(term => term.length >= 2 && !commonShortWords.has(term)) // Filter common words and words under 2 characters
-                .map(term => term.replace(/[^\w\s]/g, ''));
-            logDebug(this.settings, `Search terms: ${JSON.stringify(searchTerms)}`);
+            // Generate embedding for the processed query
+            const queryEmbedding = await this.embeddingStore.generateEmbedding(processedQuery.processed);
+            logDebug(this.settings, 'Generated query embedding');
 
             // Get the active file if any
             const activeFile = this.app.workspace.getActiveFile();
             const file = activeFile ? activeFile : undefined;
 
-            // Find semantically similar content
+            // Find semantically similar content using expanded tokens
             const results = await this.vectorStore.search(queryEmbedding, {
                 similarity: this.settings.chatSettings.similarity,
                 limit: this.settings.chatSettings.maxNotesToSearch,
-                searchTerms,
-                file // Pass the active file for recency context
+                searchTerms: processedQuery.expandedTokens,
+                file, // Pass the active file for recency context
+                phrases: processedQuery.phrases, // Pass preserved phrases for exact matching
+                query: query // Pass the original query for additional processing
             });
 
             logDebug(this.settings, `Vector search results: ${JSON.stringify(results.map(r => ({

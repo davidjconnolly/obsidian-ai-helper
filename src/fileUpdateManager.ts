@@ -95,18 +95,19 @@ export class FileUpdateManager {
 			if (filesToUpdate.length > 0) {
 				logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
 
-				filesToUpdate.forEach(path => {
+				// Use Promise.all to wait for all reindexing to complete
+				await Promise.all(filesToUpdate.map(async path => {
 					// Remove from tracking
 					this.modifiedFiles.delete(path);
 
 					// Get the file and reindex
 					const file = this.app.vault.getAbstractFileByPath(path);
 					if (file instanceof TFile && file.extension === 'md') {
-						this.reindexFile(file);
+						await this.reindexFile(file);
 					} else {
 						logError(`File not found or not a markdown file: ${path}`);
 					}
-				});
+				}));
 			} else {
 				logDebug(this.settings, 'No files need updating at this time');
 			}

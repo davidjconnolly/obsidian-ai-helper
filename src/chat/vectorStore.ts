@@ -1,11 +1,12 @@
 import { App, TFile } from 'obsidian';
-import { NoteEmbedding } from "src/chat";
-import { Settings } from "src/settings";
-import { logDebug, logError } from "src/utils";
+import { NoteEmbedding } from "../chat";
+import { Settings } from "../settings";
+import { logDebug, logError } from "../utils";
 
 export interface NoteChunk {
     content: string;
-    embedding?: Float32Array;
+    embedding: Float32Array;
+    position: number;
 }
 
 export class VectorStore {

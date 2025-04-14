@@ -51,6 +51,26 @@ export class EmbeddingStore {
       this.app = app;
   }
 
+  // Add this method to support the tests
+  async searchNotes(query: string, maxResults: number) {
+    if (!this.vectorStore || this.isVectorStoreEmpty()) {
+      return [];
+    }
+
+    try {
+      const queryEmbedding = await this.generateEmbedding(query);
+      const searchResults = await this.vectorStore.search(queryEmbedding, {
+        similarity: 0.5, // Default similarity threshold
+        limit: maxResults,
+        searchTerms: [] // No specific terms to boost
+      });
+      return searchResults;
+    } catch (error) {
+      logError('Error searching notes', error);
+      return [];
+    }
+  }
+
   async initialize() {
       try {
           logDebug(this.settings, 'Initializing EmbeddingStore');
@@ -496,6 +516,11 @@ export class EmbeddingStore {
 
   getEmbedding(path: string): NoteEmbedding | undefined {
       return this.embeddings.get(path);
+  }
+
+  // Helper method to check if vector store is empty
+  private isVectorStoreEmpty(): boolean {
+    return this.embeddings.size === 0;
   }
 }
 

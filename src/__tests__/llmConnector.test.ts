@@ -237,10 +237,10 @@ describe('LLMConnector', () => {
       // Mock fetch to reject with the properly formed error
       (global.fetch as jest.Mock).mockImplementationOnce(() => Promise.reject(abortError));
 
-      // Call the method
+      // Call the method with signal for abort support
       const promise = connector.generateResponse(messages, signal);
 
-      // Verify rejection with specific message content (not error name)
+      // Verify the AbortError is properly propagated
       await expect(promise).rejects.toThrow('The operation was aborted');
     });
 
@@ -265,6 +265,88 @@ describe('LLMConnector', () => {
           signal: signal
         })
       );
+    });
+
+    it('should properly propagate non-abort errors', async () => {
+      const { connector } = setupLLMTest();
+
+      const messages: ChatMessage[] = [
+        { role: 'user', content: 'Test message' }
+      ];
+
+      // Mock a network error
+      const networkError = new Error('Network connection lost');
+      (global.fetch as jest.Mock).mockRejectedValueOnce(networkError);
+
+      // Verify the error is properly propagated
+      await expect(connector.generateResponse(messages))
+        .rejects.toThrow('Network connection lost');
+    });
+
+    it('should handle empty message arrays', async () => {
+      const { connector } = setupLLMTest();
+
+      // Call with empty messages array
+      await connector.generateResponse([]);
+
+      // Verify API was still called with empty array
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.stringContaining('"messages":[]')
+        })
+      );
+    });
+
+    it('should handle messages with special characters', async () => {
+      const { connector } = setupLLMTest();
+
+      const messagesWithSpecialChars: ChatMessage[] = [
+        { role: 'user', content: 'Test message with special chars: äöü!@#$%^&*()_+\n\t"<>' }
+      ];
+
+      await connector.generateResponse(messagesWithSpecialChars);
+
+      // Verify message was properly encoded
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          body: expect.stringContaining('special chars: äöü!@#$%^&*()_+\\n\\t')
+        })
+      );
+    });
+
+    it('should handle alternative response formats', async () => {
+      const { connector } = setupLLMTest();
+
+      // Set up a different response format sometimes seen from different providers
+      const alternateResponseData = {
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: 'Alternate format response'
+            }
+          }
+        ]
+      };
+
+      // Mock the response
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue(alternateResponseData)
+      });
+
+      const messages: ChatMessage[] = [
+        { role: 'user', content: 'Test message' }
+      ];
+
+      const result = await connector.generateResponse(messages);
+
+      expect(result).toEqual({
+        role: 'assistant',
+        content: 'Alternate format response'
+      });
     });
   });
 });

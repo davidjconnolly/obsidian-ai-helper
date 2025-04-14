@@ -1,7 +1,7 @@
 import { requestUrl, RequestUrlParam } from 'obsidian';
-import { Settings } from "src/settings";
-import { ChatMessage } from "src/chat";
-import { logError, logDebug } from "src/utils";
+import { Settings } from "../settings";
+import { ChatMessage } from "../chat";
+import { logError, logDebug } from "../utils";
 
 export class LLMConnector {
   private settings: Settings;

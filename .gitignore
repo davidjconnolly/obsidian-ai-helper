@@ -23,3 +23,6 @@ data.json
 
 # Exclude Vector Store
 embeddings.json
+
+# Exclude Coverage
+coverage

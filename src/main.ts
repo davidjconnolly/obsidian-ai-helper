@@ -10,12 +10,10 @@ export default class AIHelperPlugin extends Plugin {
 	settings: Settings;
 	private indexingCompleteListener: (e: CustomEvent) => void;
 	private fileUpdateManager: FileUpdateManager;
-	private modifiedFiles: Map<string, number>;
 
 	async onload() {
 		await this.loadSettings();
 		this.fileUpdateManager = new FileUpdateManager(this.settings, this.app);
-		this.modifiedFiles = this.fileUpdateManager.modifiedFiles;
 		// Register the AI Chat view
 		this.registerView(
 			AI_CHAT_VIEW_TYPE,
@@ -100,7 +98,7 @@ export default class AIHelperPlugin extends Plugin {
 					if (file instanceof TFile && file.extension === 'md') {
 						logDebug(this.settings, `Markdown file deleted: ${file.path}. Removing from index.`);
 						this.fileUpdateManager.removeFileFromIndex(file.path);
-						this.modifiedFiles.delete(file.path); // Clean up from modified files tracking
+						this.fileUpdateManager.deleteModifiedFile(file.path); // Clean up from modified files tracking
 					}
 				})
 			);
@@ -114,11 +112,7 @@ export default class AIHelperPlugin extends Plugin {
 						this.fileUpdateManager.reindexFile(file);
 
 						// Update tracking if the file was in the modified list
-						if (this.modifiedFiles.has(oldPath)) {
-							const timestamp = this.modifiedFiles.get(oldPath);
-							this.modifiedFiles.delete(oldPath);
-							this.modifiedFiles.set(file.path, timestamp || Date.now());
-						}
+						this.fileUpdateManager.transferModifiedFile(oldPath, file.path);
 					}
 				})
 			);
@@ -132,8 +126,8 @@ export default class AIHelperPlugin extends Plugin {
 						logDebug(this.settings, `File modified: ${file.path} at ${new Date(now).toLocaleTimeString()}`);
 
 						// Check if this is a new modification or an update to an existing one
-						const wasAlreadyModified = this.modifiedFiles.has(file.path);
-						this.modifiedFiles.set(file.path, now);
+						const wasAlreadyModified = this.fileUpdateManager.hasModifiedFile(file.path);
+						this.fileUpdateManager.addModifiedFile(file.path, now);
 
 						if (wasAlreadyModified) {
 							logDebug(this.settings, `Updated timestamp for already modified file: ${file.path}`);
@@ -164,8 +158,8 @@ export default class AIHelperPlugin extends Plugin {
 						return;
 					}
 
-					if (this.modifiedFiles.size > 0) {
-						logDebug(this.settings, `Found ${this.modifiedFiles.size} modified files in queue, processing now`);
+					if (this.fileUpdateManager.getModifiedFilesCount() > 0) {
+						logDebug(this.settings, `Found ${this.fileUpdateManager.getModifiedFilesCount()} modified files in queue, processing now`);
 						this.fileUpdateManager.processPendingFileUpdates.flush();
 					} else {
 						logDebug(this.settings, 'No modified files in queue');
@@ -182,12 +176,12 @@ export default class AIHelperPlugin extends Plugin {
 
 				// For initial indexing, clear all modified files to prevent reindexing what was just indexed
 				if (isInitialIndexing) {
-					logDebug(this.settings, `This is the initial indexing. Clearing ${this.modifiedFiles.size} modified files to prevent duplicate indexing.`);
-					this.modifiedFiles.clear(); // Clear all modified files
+					logDebug(this.settings, `This is the initial indexing. Clearing ${this.fileUpdateManager.getModifiedFilesCount()} modified files to prevent duplicate indexing.`);
+					this.fileUpdateManager.clearModifiedFiles(); // Clear all modified files
 				}
 				// Only process files if this is not the initial indexing
-				else if (this.modifiedFiles.size > 0) {
-					logDebug(this.settings, `Processing ${this.modifiedFiles.size} files that were explicitly modified during initialization`);
+				else if (this.fileUpdateManager.getModifiedFilesCount() > 0) {
+					logDebug(this.settings, `Processing ${this.fileUpdateManager.getModifiedFilesCount()} files that were explicitly modified during initialization`);
 					// Process only files that are actually in the queue, don't trigger a full reindex
 					this.fileUpdateManager.processPendingFileUpdates.flush();
 				} else {

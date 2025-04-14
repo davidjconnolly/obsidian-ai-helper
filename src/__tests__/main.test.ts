@@ -367,6 +367,22 @@ describe('AIHelperPlugin', () => {
       expect(openAIChat).toHaveBeenCalledWith(plugin.app);
     });
 
+    it('should call processPendingFileUpdates.flush when process-pending-updates command is triggered', () => {
+      // Find the process-pending-updates command
+      const commandCall = (plugin.addCommand as jest.Mock).mock.calls.find(
+        call => call[0].id === 'process-pending-updates'
+      );
+
+      // Get the callback function
+      const callback = commandCall[0].callback;
+
+      // Call the callback
+      callback();
+
+      // Verify processPendingFileUpdates.flush was called
+      expect((plugin as any).fileUpdateManager.processPendingFileUpdates.flush).toHaveBeenCalled();
+    });
+
     it('should call reindexFile when a markdown file is created', () => {
       // Find the create event registration
       const createEventCall = (plugin.app.vault.on as jest.Mock).mock.calls.find(
@@ -403,6 +419,88 @@ describe('AIHelperPlugin', () => {
 
       // Verify reindexFile was not called
       expect((plugin as any).fileUpdateManager.reindexFile).not.toHaveBeenCalled();
+    });
+
+    it('should call removeFileFromIndex when a markdown file is deleted', () => {
+      // Find the delete event registration
+      const deleteEventCall = (plugin.app.vault.on as jest.Mock).mock.calls.find(
+        call => call[0] === 'delete'
+      );
+
+      // Get the callback function
+      const callback = deleteEventCall[1];
+
+      // Create a markdown file to delete
+      const mockFile = new (jest.requireMock('obsidian').TFile)('test-delete.md');
+
+      // Call the callback
+      callback(mockFile);
+
+      // Verify removeFileFromIndex was called
+      expect((plugin as any).fileUpdateManager.removeFileFromIndex).toHaveBeenCalledWith(mockFile.path);
+    });
+
+    it('should not call removeFileFromIndex for non-markdown files', () => {
+      // Find the delete event registration
+      const deleteEventCall = (plugin.app.vault.on as jest.Mock).mock.calls.find(
+        call => call[0] === 'delete'
+      );
+
+      // Get the callback function
+      const callback = deleteEventCall[1];
+
+      // Create a non-markdown file to delete
+      const mockFile = new (jest.requireMock('obsidian').TFile)('test-delete.txt');
+
+      // Call the callback
+      callback(mockFile);
+
+      // Verify removeFileFromIndex was not called
+      expect((plugin as any).fileUpdateManager.removeFileFromIndex).not.toHaveBeenCalled();
+    });
+
+    it('should handle file rename events correctly', () => {
+      // Find the rename event registration
+      const renameEventCall = (plugin.app.vault.on as jest.Mock).mock.calls.find(
+        call => call[0] === 'rename'
+      );
+
+      // Get the callback function
+      const callback = renameEventCall[1];
+
+      // Create a markdown file to rename
+      const mockFile = new (jest.requireMock('obsidian').TFile)('new-name.md');
+      const oldPath = 'old-name.md';
+
+      // Call the callback
+      callback(mockFile, oldPath);
+
+      // Verify correct methods were called
+      expect((plugin as any).fileUpdateManager.removeFileFromIndex).toHaveBeenCalledWith(oldPath);
+      expect((plugin as any).fileUpdateManager.reindexFile).toHaveBeenCalledWith(mockFile);
+    });
+
+    it('should handle file modification events', () => {
+      // Find the modify event registration
+      const modifyEventCall = (plugin.app.vault.on as jest.Mock).mock.calls.find(
+        call => call[0] === 'modify'
+      );
+
+      // Get the callback function
+      const callback = modifyEventCall[1];
+
+      // Create a markdown file to modify
+      const mockFile = new (jest.requireMock('obsidian').TFile)('test-modify.md');
+
+      // Verify modified files is empty initially
+      expect((plugin as any).modifiedFiles.size).toBe(0);
+
+      // Call the callback
+      callback(mockFile);
+
+      // Verify file was added to modified files and debounce was triggered
+      expect((plugin as any).modifiedFiles.has(mockFile.path)).toBe(true);
+      expect((plugin as any).fileUpdateManager.processPendingFileUpdates).toHaveBeenCalled();
     });
   });
 });

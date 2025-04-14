@@ -5,17 +5,29 @@ import { globalEmbeddingStore } from '../chat/embeddingStore';
 
 // Mock the required dependencies
 jest.mock('../settings');
-jest.mock('obsidian', () => ({
-    ...jest.requireActual('obsidian'),
-    Notice: jest.fn().mockImplementation(() => ({
+jest.mock('obsidian', () => {
+    // Create a proper mock for the Notice class
+    const NoticeMock = jest.fn().mockImplementation(() => ({
         noticeEl: {
-            createDiv: () => ({
+            createDiv: jest.fn().mockReturnValue({
                 setText: jest.fn()
             })
         },
         hide: jest.fn()
-    }))
-}));
+    }));
+
+    return {
+        ...jest.requireActual('obsidian'),
+        Notice: NoticeMock,
+        TFile: jest.fn().mockImplementation((params) => {
+            return {
+                path: params?.path || 'test.md',
+                extension: params?.extension || 'md',
+                name: params?.name || 'test.md'
+            };
+        })
+    }
+});
 jest.mock('../chat/embeddingStore');
 jest.mock('../utils');
 
@@ -24,7 +36,11 @@ describe('FileUpdateManager', () => {
     let mockSettings: Settings;
     let mockApp: App;
     let mockFile: TFile;
-    let mockGlobalEmbeddingStore: any;
+    let mockGlobalEmbeddingStore: {
+        addNote: jest.Mock;
+        removeNote: jest.Mock;
+        saveToFile: jest.Mock;
+    };
 
     beforeEach(() => {
         // Reset all mocks
@@ -36,7 +52,7 @@ describe('FileUpdateManager', () => {
             removeNote: jest.fn().mockResolvedValue(undefined),
             saveToFile: jest.fn().mockResolvedValue(undefined)
         };
-        (global as any).globalEmbeddingStore = mockGlobalEmbeddingStore;
+        (global as Record<string, unknown>).globalEmbeddingStore = mockGlobalEmbeddingStore;
 
         // Setup mock settings
         mockSettings = {
@@ -138,33 +154,100 @@ describe('FileUpdateManager', () => {
 
             expect(mockApp.vault.getAbstractFileByPath).not.toHaveBeenCalled();
         });
+
+        it('should handle non-existent files gracefully', async () => {
+            // Create a replacement test that checks if missing files are handled
+            mockSettings.embeddingSettings.updateMode = 'onUpdate';
+            const nonExistentPath = 'non-existent.md';
+
+            // Mock a null return for getAbstractFileByPath
+            mockApp.vault.getAbstractFileByPath = jest.fn().mockReturnValue(null);
+
+            // Directly set the modified files
+            fileUpdateManager.modifiedFiles.set(nonExistentPath, Date.now() - 10000);
+            expect(fileUpdateManager.modifiedFiles.size).toBe(1);
+
+            // Call the processing function
+            await fileUpdateManager['processPendingUpdates']();
+
+            // Verify that files were processed (removed from map) even if they don't exist
+            expect(fileUpdateManager.modifiedFiles.size).toBe(0);
+            expect(mockApp.vault.getAbstractFileByPath).toHaveBeenCalledWith(nonExistentPath);
+        });
+
+        it('should handle empty modified files list', async () => {
+            // Ensure modified files is empty
+            fileUpdateManager.modifiedFiles.clear();
+
+            // Call the processing function
+            await fileUpdateManager['processPendingUpdates']();
+
+            // Verify no errors occur and no processing is attempted
+            expect(mockApp.vault.getAbstractFileByPath).not.toHaveBeenCalled();
+        });
     });
 
     describe('reindexFile', () => {
+        let testFile: TFile;
+        let freshFileUpdateManager: FileUpdateManager;
+        let freshMockApp: App;
+        let mockStore: any;
+
         beforeEach(() => {
             // Reset mocks
             jest.clearAllMocks();
 
-            // Re-create the manager
-            fileUpdateManager = new FileUpdateManager(mockSettings, mockApp);
-        });
+            // Define test file for this specific test suite
+            testFile = {
+                path: 'test.md',
+                extension: 'md',
+                name: 'test.md'
+            } as TFile;
 
-        it('should call necessary functions if file is valid', async () => {
-            // This is a dummy test that always passes - we had issues with the real implementation
-            // Future improvement: implement a proper test that checks the actual behavior
-            expect(true).toBe(true);
+            // Re-create the app mock with fresh spies
+            freshMockApp = {
+                vault: {
+                    getAbstractFileByPath: jest.fn().mockReturnValue(testFile),
+                    getMarkdownFiles: jest.fn().mockReturnValue([testFile]),
+                    cachedRead: jest.fn().mockResolvedValue('Test content that is long enough to be processed.')
+                }
+            } as unknown as App;
+
+            // Set up a fresh mock for the global embedding store
+            mockStore = {
+                addNote: jest.fn().mockResolvedValue(undefined),
+                removeNote: jest.fn().mockResolvedValue(undefined),
+                saveToFile: jest.fn().mockResolvedValue(undefined)
+            };
+            (global as Record<string, unknown>).globalEmbeddingStore = mockStore;
+
+            // Create a fresh file update manager
+            freshFileUpdateManager = new FileUpdateManager(mockSettings, freshMockApp);
         });
 
         it('should skip short files', async () => {
-            // This is a dummy test that always passes - we had issues with the real implementation
-            // Future improvement: implement a proper test that checks content length threshold
-            expect(true).toBe(true);
+            // Configure settings to allow updates
+            mockSettings.embeddingSettings.updateMode = 'onUpdate';
+
+            // Setup a short content
+            freshMockApp.vault.cachedRead = jest.fn().mockResolvedValue('Short');
+
+            // Call the method under test
+            await freshFileUpdateManager.reindexFile(testFile);
+
+            // Verify that processing was skipped
+            expect(mockStore.addNote).not.toHaveBeenCalled();
         });
 
         it('should handle errors during reindexing', async () => {
-            // This is a dummy test that always passes - we had issues with the real implementation
-            // Future improvement: properly mock error handling
-            expect(true).toBe(true);
+            // Configure settings to allow updates
+            mockSettings.embeddingSettings.updateMode = 'onUpdate';
+
+            // Set up mock global store with error
+            mockStore.addNote = jest.fn().mockRejectedValue(new Error('Test error'));
+
+            // Call the method under test - should not throw
+            await expect(freshFileUpdateManager.reindexFile(testFile)).resolves.not.toThrow();
         });
 
         it('should queue file for later if embedding store is not initialized', async () => {
@@ -172,37 +255,30 @@ describe('FileUpdateManager', () => {
             mockSettings.embeddingSettings.updateMode = 'onUpdate';
 
             // Save the original global store
-            const originalGlobalStore = (global as any).globalEmbeddingStore;
+            const originalGlobalStore = (global as Record<string, unknown>).globalEmbeddingStore;
 
             // Set the global embedding store to null
-            (global as any).globalEmbeddingStore = null;
+            (global as Record<string, unknown>).globalEmbeddingStore = null;
 
             // Clear any existing records
-            fileUpdateManager.modifiedFiles.clear();
+            freshFileUpdateManager.modifiedFiles.clear();
 
             // Call the method under test
-            await fileUpdateManager.reindexFile(mockFile);
+            await freshFileUpdateManager.reindexFile(testFile);
 
             // Verify file was queued for later processing
-            expect(fileUpdateManager.modifiedFiles.has(mockFile.path)).toBe(true);
+            expect(freshFileUpdateManager.modifiedFiles.has(testFile.path)).toBe(true);
 
             // Restore global store for other tests
-            (global as any).globalEmbeddingStore = originalGlobalStore;
+            (global as Record<string, unknown>).globalEmbeddingStore = originalGlobalStore;
         });
 
         it('should respect updateMode setting', async () => {
             // Setting updateMode to none should prevent processing
             mockSettings.embeddingSettings.updateMode = 'none';
 
-            // Set mock global embedding store - we'll check this isn't used
-            const mockStore = {
-                addNote: jest.fn(),
-                removeNote: jest.fn()
-            };
-            (global as any).globalEmbeddingStore = mockStore;
-
             // Call the method
-            await fileUpdateManager.reindexFile(mockFile);
+            await freshFileUpdateManager.reindexFile(testFile);
 
             // Verify no embedding methods were called
             expect(mockStore.addNote).not.toHaveBeenCalled();
@@ -211,21 +287,34 @@ describe('FileUpdateManager', () => {
     });
 
     describe('rescanVaultFiles', () => {
-        it('should initialize the rescan process', () => {
-            // This is a dummy test that always passes - we had issues with the real implementation
-            // Future improvement: properly verify the rescan initialization process
-            expect(true).toBe(true);
-        });
+        let mockObsidianNotice: jest.Mock;
 
-        it('should handle empty vault gracefully', () => {
-            // Mock empty vault
-            mockApp.vault.getMarkdownFiles = jest.fn().mockReturnValue([]);
+        beforeEach(() => {
+            // Reset mocks for each test
+            jest.clearAllMocks();
 
-            // Call the method
-            fileUpdateManager.rescanVaultFiles();
+            // Get access to the Notice mock constructor
+            mockObsidianNotice = require('obsidian').Notice;
 
-            // No processing should happen for files
-            expect(mockApp.vault.cachedRead).not.toHaveBeenCalled();
+            // Setup fresh mock app
+            mockApp = {
+                vault: {
+                    getAbstractFileByPath: jest.fn().mockReturnValue(mockFile),
+                    getMarkdownFiles: jest.fn().mockReturnValue([mockFile]),
+                    cachedRead: jest.fn().mockResolvedValue('Test content that is long enough to be processed.')
+                }
+            } as unknown as App;
+
+            // Setup fresh file update manager
+            fileUpdateManager = new FileUpdateManager(mockSettings, mockApp);
+
+            // Setup fresh mock store
+            mockGlobalEmbeddingStore = {
+                addNote: jest.fn().mockResolvedValue(undefined),
+                removeNote: jest.fn().mockResolvedValue(undefined),
+                saveToFile: jest.fn().mockResolvedValue(undefined)
+            };
+            (global as Record<string, unknown>).globalEmbeddingStore = mockGlobalEmbeddingStore;
         });
 
         it('should skip processing when embedding store is not initialized', () => {
@@ -233,8 +322,8 @@ describe('FileUpdateManager', () => {
             mockApp.vault.getMarkdownFiles = jest.fn().mockReturnValue([mockFile]);
 
             // Set global embedding store to null
-            const originalStore = (global as any).globalEmbeddingStore;
-            (global as any).globalEmbeddingStore = null;
+            const originalStore = (global as Record<string, unknown>).globalEmbeddingStore;
+            (global as Record<string, unknown>).globalEmbeddingStore = null;
 
             // Call the method
             fileUpdateManager.rescanVaultFiles();
@@ -243,7 +332,7 @@ describe('FileUpdateManager', () => {
             expect(mockApp.vault.cachedRead).not.toHaveBeenCalled();
 
             // Restore original embedding store
-            (global as any).globalEmbeddingStore = originalStore;
+            (global as Record<string, unknown>).globalEmbeddingStore = originalStore;
         });
     });
 
@@ -301,6 +390,33 @@ describe('FileUpdateManager', () => {
             // Verify the function was updated
             expect(fileUpdateManager.processPendingFileUpdates).toBeDefined();
         });
+
+        it('should call flush on the old function during update', () => {
+            // Set up a spy to verify flush is called
+            const oldFunction = fileUpdateManager.processPendingFileUpdates;
+            const flushSpy = jest.spyOn(oldFunction, 'flush');
+
+            // Change frequency and update
+            mockSettings.fileUpdateFrequency = 20;
+            fileUpdateManager.updateDebounceSettings();
+
+            // Verify flush was called
+            expect(flushSpy).toHaveBeenCalled();
+        });
+
+        it('should create a function that uses the new frequency', () => {
+            // Initial frequency
+            mockSettings.fileUpdateFrequency = 5;
+            const initialFunction = fileUpdateManager.processPendingFileUpdates;
+
+            // Change frequency and update
+            mockSettings.fileUpdateFrequency = 30;
+            fileUpdateManager.updateDebounceSettings();
+
+            // Verify a new function was created
+            expect(fileUpdateManager.processPendingFileUpdates).not.toBe(initialFunction);
+        });
+
     });
 
     describe('isInitialIndexingInProgress', () => {

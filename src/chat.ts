@@ -92,8 +92,15 @@ export class AIHelperChatView extends ItemView {
         // Set up the initialization promise
         this.initializationPromise = (async () => {
             try {
+                const startTime = Date.now();
+                const timeoutMs = 5000; // 5 seconds timeout
+
                 // Wait for initialization to complete if it's in progress or hasn't started
                 while (!isGloballyInitialized) {
+                    if (Date.now() - startTime > timeoutMs) {
+                        throw new Error('Initialization timed out after 5 seconds');
+                    }
+
                     if (globalInitializationPromise) {
                         logDebug(settings, 'Waiting for existing initialization to complete');
                         await globalInitializationPromise;

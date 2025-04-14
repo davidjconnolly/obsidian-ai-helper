@@ -481,6 +481,10 @@ export class EmbeddingStore {
 
           // Show completion notice
           new Notice(`Indexing complete: ${processedCount} files processed`, 3000);
+      } catch (error) {
+          new Notice('Error during reindexing: ' + error, 10000);
+          logError('Error during reindexing', error);
+          throw error;
       } finally {
           progressNotice.hide();
       }
@@ -591,40 +595,46 @@ async function scanForChanges(app: App, settings: Settings, isInitialLoad: boole
         const progressElement = progressNotice.noticeEl.createDiv();
         let processedCount = 0;
 
-        // Remove deleted files from both memory and persisted store
-        for (const deletedPath of deletedPaths) {
-            globalEmbeddingStore.removeNote(deletedPath);
-            processedCount++;
-            progressElement.setText(
-                `Updating index: ${processedCount}/${totalChanges} (Removing deleted files)`
+        try {
+            // Remove deleted files from both memory and persisted store
+            for (const deletedPath of deletedPaths) {
+                globalEmbeddingStore.removeNote(deletedPath);
+                processedCount++;
+                progressElement.setText(
+                    `Updating index: ${processedCount}/${totalChanges} (Removing deleted files)`
+                );
+            }
+
+            // Update modified files
+            for (const file of changedFiles) {
+                progressElement.setText(
+                    `Updating index: ${processedCount + 1}/${totalChanges} (Processing ${file.path})`
+                );
+                const content = await app.vault.cachedRead(file);
+                await globalEmbeddingStore.addNote(file, content);
+                processedCount++;
+            }
+
+            // Save updated embeddings after all changes are processed
+            await globalEmbeddingStore.saveToFile();
+
+            // Show summary of changes
+            const deletedCount = deletedPaths.size;
+            const modifiedCount = changedFiles.length;
+            let summaryMessage = [];
+            if (modifiedCount > 0) summaryMessage.push(`updated ${modifiedCount} files`);
+            if (deletedCount > 0) summaryMessage.push(`removed ${deletedCount} deleted files`);
+
+            new Notice(
+                `Index update complete: ${summaryMessage.join(', ')}`,
+                3000
             );
+        } catch (error) {
+            new Notice('Error during index update: ' + error, 10000);
+            logError('Error during index update', error);
+            throw error;
+        } finally {
+            progressNotice.hide();
         }
-
-        // Update modified files
-        for (const file of changedFiles) {
-            progressElement.setText(
-                `Updating index: ${processedCount + 1}/${totalChanges} (Processing ${file.path})`
-            );
-            const content = await app.vault.cachedRead(file);
-            await globalEmbeddingStore.addNote(file, content);
-            processedCount++;
-        }
-
-        progressNotice.hide();
-
-        // Save updated embeddings after all changes are processed
-        await globalEmbeddingStore.saveToFile();
-
-        // Show summary of changes
-        const deletedCount = deletedPaths.size;
-        const modifiedCount = changedFiles.length;
-        let summaryMessage = [];
-        if (modifiedCount > 0) summaryMessage.push(`updated ${modifiedCount} files`);
-        if (deletedCount > 0) summaryMessage.push(`removed ${deletedCount} deleted files`);
-
-        new Notice(
-            `Index update complete: ${summaryMessage.join(', ')}`,
-            3000
-        );
     }
 }

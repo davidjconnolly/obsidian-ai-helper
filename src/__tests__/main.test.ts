@@ -88,8 +88,9 @@ jest.mock('../fileUpdateManager', () => {
       }) as jest.Mock & { flush: jest.Mock };
       processPendingFileUpdates.flush = jest.fn();
 
+      const modifiedFiles = new Map();
+
       return {
-        modifiedFiles: new Map(),
         processPendingFileUpdates,
         reindexFile: jest.fn().mockImplementation(function() {
           return Promise.resolve();
@@ -100,7 +101,21 @@ jest.mock('../fileUpdateManager', () => {
         }),
         getPeriodicCheckInterval: jest.fn().mockReturnValue(30000),
         isInitialIndexingInProgress: jest.fn().mockReturnValue(false),
-        updateDebounceSettings: jest.fn()
+        updateDebounceSettings: jest.fn(),
+        // Add accessor methods
+        hasModifiedFile: jest.fn().mockImplementation((path) => modifiedFiles.has(path)),
+        getModifiedTimestamp: jest.fn().mockImplementation((path) => modifiedFiles.get(path)),
+        addModifiedFile: jest.fn().mockImplementation((path, timestamp) => modifiedFiles.set(path, timestamp)),
+        deleteModifiedFile: jest.fn().mockImplementation((path) => modifiedFiles.delete(path)),
+        getModifiedFilesCount: jest.fn().mockImplementation(() => modifiedFiles.size),
+        clearModifiedFiles: jest.fn().mockImplementation(() => modifiedFiles.clear()),
+        transferModifiedFile: jest.fn().mockImplementation((oldPath, newPath) => {
+          if (modifiedFiles.has(oldPath)) {
+            const timestamp = modifiedFiles.get(oldPath);
+            modifiedFiles.delete(oldPath);
+            modifiedFiles.set(newPath, timestamp || Date.now());
+          }
+        })
       };
     })
   };
@@ -493,13 +508,13 @@ describe('AIHelperPlugin', () => {
       const mockFile = new (jest.requireMock('obsidian').TFile)('test-modify.md');
 
       // Verify modified files is empty initially
-      expect((plugin as any).modifiedFiles.size).toBe(0);
+      expect((plugin as any).fileUpdateManager.getModifiedFilesCount()).toBe(0);
 
       // Call the callback
       callback(mockFile);
 
       // Verify file was added to modified files and debounce was triggered
-      expect((plugin as any).modifiedFiles.has(mockFile.path)).toBe(true);
+      expect((plugin as any).fileUpdateManager.hasModifiedFile(mockFile.path)).toBe(true);
       expect((plugin as any).fileUpdateManager.processPendingFileUpdates).toHaveBeenCalled();
     });
   });

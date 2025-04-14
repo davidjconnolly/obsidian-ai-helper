@@ -135,20 +135,20 @@ describe('FileUpdateManager', () => {
             mockSettings.embeddingSettings.updateMode = 'onUpdate';
             const filePath = 'test.md';
 
-            // Directly set the modified files (no need to test the call chain)
-            fileUpdateManager.modifiedFiles.set(filePath, Date.now() - 10000);
-            expect(fileUpdateManager.modifiedFiles.size).toBe(1);
+            // Set the modified files using the public method
+            fileUpdateManager.addModifiedFile(filePath, Date.now() - 10000);
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(1);
 
             // Call the processing function
             await fileUpdateManager['processPendingUpdates']();
 
             // Verify that files were processed by checking the map is empty
-            expect(fileUpdateManager.modifiedFiles.size).toBe(0);
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(0);
         });
 
         it('should not process files if update mode is none', async () => {
             mockSettings.embeddingSettings.updateMode = 'none';
-            fileUpdateManager.modifiedFiles.set('test.md', Date.now());
+            fileUpdateManager.addModifiedFile('test.md', Date.now());
 
             await fileUpdateManager.processPendingFileUpdates.flush();
 
@@ -163,21 +163,21 @@ describe('FileUpdateManager', () => {
             // Mock a null return for getAbstractFileByPath
             mockApp.vault.getAbstractFileByPath = jest.fn().mockReturnValue(null);
 
-            // Directly set the modified files
-            fileUpdateManager.modifiedFiles.set(nonExistentPath, Date.now() - 10000);
-            expect(fileUpdateManager.modifiedFiles.size).toBe(1);
+            // Set the modified files using the public method
+            fileUpdateManager.addModifiedFile(nonExistentPath, Date.now() - 10000);
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(1);
 
             // Call the processing function
             await fileUpdateManager['processPendingUpdates']();
 
             // Verify that files were processed (removed from map) even if they don't exist
-            expect(fileUpdateManager.modifiedFiles.size).toBe(0);
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(0);
             expect(mockApp.vault.getAbstractFileByPath).toHaveBeenCalledWith(nonExistentPath);
         });
 
         it('should handle empty modified files list', async () => {
             // Ensure modified files is empty
-            fileUpdateManager.modifiedFiles.clear();
+            fileUpdateManager.clearModifiedFiles();
 
             // Call the processing function
             await fileUpdateManager['processPendingUpdates']();
@@ -261,13 +261,13 @@ describe('FileUpdateManager', () => {
             (global as Record<string, unknown>).globalEmbeddingStore = null;
 
             // Clear any existing records
-            freshFileUpdateManager.modifiedFiles.clear();
+            freshFileUpdateManager.clearModifiedFiles();
 
             // Call the method under test
             await freshFileUpdateManager.reindexFile(testFile);
 
             // Verify file was queued for later processing
-            expect(freshFileUpdateManager.modifiedFiles.has(testFile.path)).toBe(true);
+            expect(freshFileUpdateManager.hasModifiedFile(testFile.path)).toBe(true);
 
             // Restore global store for other tests
             (global as Record<string, unknown>).globalEmbeddingStore = originalGlobalStore;
@@ -336,18 +336,89 @@ describe('FileUpdateManager', () => {
         });
     });
 
+    // Add tests for the new accessor methods
+    describe('modifiedFiles accessor methods', () => {
+        it('should add and check for modified files', () => {
+            const filePath = 'test.md';
+            const timestamp = Date.now();
+
+            // Initially should be empty
+            expect(fileUpdateManager.hasModifiedFile(filePath)).toBe(false);
+
+            // Add a file
+            fileUpdateManager.addModifiedFile(filePath, timestamp);
+
+            // Should now exist
+            expect(fileUpdateManager.hasModifiedFile(filePath)).toBe(true);
+            expect(fileUpdateManager.getModifiedTimestamp(filePath)).toBe(timestamp);
+        });
+
+        it('should delete modified files', () => {
+            const filePath = 'test.md';
+
+            // Add a file
+            fileUpdateManager.addModifiedFile(filePath, Date.now());
+            expect(fileUpdateManager.hasModifiedFile(filePath)).toBe(true);
+
+            // Delete the file
+            fileUpdateManager.deleteModifiedFile(filePath);
+            expect(fileUpdateManager.hasModifiedFile(filePath)).toBe(false);
+        });
+
+        it('should count modified files', () => {
+            // Should start empty
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(0);
+
+            // Add some files
+            fileUpdateManager.addModifiedFile('test1.md', Date.now());
+            fileUpdateManager.addModifiedFile('test2.md', Date.now());
+
+            // Should have 2 files now
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(2);
+
+            // Clear all files
+            fileUpdateManager.clearModifiedFiles();
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(0);
+        });
+
+        it('should transfer modified files during renames', () => {
+            const oldPath = 'old.md';
+            const newPath = 'new.md';
+            const timestamp = Date.now();
+
+            // Add file with old path
+            fileUpdateManager.addModifiedFile(oldPath, timestamp);
+
+            // Transfer to new path
+            fileUpdateManager.transferModifiedFile(oldPath, newPath);
+
+            // Old path should be gone, new path should exist
+            expect(fileUpdateManager.hasModifiedFile(oldPath)).toBe(false);
+            expect(fileUpdateManager.hasModifiedFile(newPath)).toBe(true);
+            expect(fileUpdateManager.getModifiedTimestamp(newPath)).toBe(timestamp);
+        });
+
+        it('should do nothing when transferring a non-existent file', () => {
+            // Try to transfer a file that doesn't exist
+            fileUpdateManager.transferModifiedFile('nonexistent.md', 'new.md');
+
+            // Nothing should have changed
+            expect(fileUpdateManager.hasModifiedFile('new.md')).toBe(false);
+        });
+    });
+
     // Add new tests for other functionality
     describe('queueFileForUpdate', () => {
         it('should queue a file for update', () => {
             // Create a method to test adding files to the update queue
             const filePath = 'test.md';
-            fileUpdateManager.modifiedFiles.clear();
+            fileUpdateManager.clearModifiedFiles();
 
-            // Instead of trying to access a private method, directly add to modifiedFiles
-            fileUpdateManager.modifiedFiles.set(filePath, Date.now());
+            // Use the public method to add to the queue
+            fileUpdateManager.addModifiedFile(filePath, Date.now());
 
             // Check file was added to queue
-            expect(fileUpdateManager.modifiedFiles.has(filePath)).toBe(true);
+            expect(fileUpdateManager.hasModifiedFile(filePath)).toBe(true);
         });
     });
 
@@ -475,15 +546,15 @@ describe('FileUpdateManager', () => {
             // Reset the fileUpdateManager instance
             fileUpdateManager = new FileUpdateManager(mockSettings, mockApp);
 
-            // Add a file to the modified files map to process
-            fileUpdateManager.modifiedFiles.set('test.md', Date.now());
+            // Add a file to the modified files to process
+            fileUpdateManager.addModifiedFile('test.md', Date.now());
 
             // Call the private method directly since we can't rely on flush being properly mocked
             await fileUpdateManager['processPendingUpdates']();
 
             // Since we've called the method to process files, the files should be processed
             // Verify the files were processed (they should be removed from the map)
-            expect(fileUpdateManager.modifiedFiles.size).toBe(0);
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(0);
         });
     });
 
@@ -496,13 +567,13 @@ describe('FileUpdateManager', () => {
             fileUpdateManager = new FileUpdateManager(mockSettings, mockApp);
 
             // Add a file to the modified files map to ensure there's something to process
-            fileUpdateManager.modifiedFiles.set('test1.md', Date.now());
+            fileUpdateManager.addModifiedFile('test1.md', Date.now());
 
             // Call the private method directly
             await fileUpdateManager['processPendingUpdates']();
 
             // File should be processed and removed from the map
-            expect(fileUpdateManager.modifiedFiles.size).toBe(0);
+            expect(fileUpdateManager.getModifiedFilesCount()).toBe(0);
         });
 
         it('should handle files when update mode is none', async () => {
@@ -513,7 +584,7 @@ describe('FileUpdateManager', () => {
             fileUpdateManager = new FileUpdateManager(mockSettings, mockApp);
 
             // Add a file to check
-            fileUpdateManager.modifiedFiles.set('test2.md', Date.now());
+            fileUpdateManager.addModifiedFile('test2.md', Date.now());
 
             // Mock the reindexFile method to verify it's not called with none mode
             const reindexSpy = jest.spyOn(fileUpdateManager, 'reindexFile');

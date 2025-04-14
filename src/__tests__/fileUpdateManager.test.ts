@@ -353,46 +353,49 @@ describe('FileUpdateManager', () => {
 
     describe('updateDebounceSettings', () => {
         it('should update debounce settings when frequency changes', () => {
-            const originalFlush = fileUpdateManager.processPendingFileUpdates.flush;
-            mockSettings.fileUpdateFrequency = 10;
+            // Save original function reference
+            const originalFunction = fileUpdateManager.processPendingFileUpdates;
 
+            // Set up spy on flush before calling updateDebounceSettings
+            const flushSpy = jest.spyOn(originalFunction, 'flush');
+
+            // Change frequency and update
+            mockSettings.fileUpdateFrequency = 10;
             fileUpdateManager.updateDebounceSettings();
 
-            expect(fileUpdateManager.processPendingFileUpdates.flush).not.toBe(originalFlush);
+            // Verify a new function was created (different from original)
+            expect(fileUpdateManager.processPendingFileUpdates).not.toBe(originalFunction);
+
+            // Verify old function's flush was called
+            expect(flushSpy).toHaveBeenCalled();
         });
 
         it('should set correct debounce time based on frequency', () => {
-            // Test with different frequency values
+            // Create a spy on setTimeout to capture the timing
+            const originalSetTimeout = window.setTimeout;
+            let capturedWaitTime: number | null = null;
+
+            jest.spyOn(window, 'setTimeout').mockImplementation((callback: any, wait?: number) => {
+                capturedWaitTime = wait || 0;
+                return 123 as unknown as NodeJS.Timeout;
+            });
+
+            // Change frequency and update debounce
             mockSettings.fileUpdateFrequency = 15;
             fileUpdateManager.updateDebounceSettings();
 
-            // Check if the created debounce function has the correct wait time
-            // We can't directly access private properties, but we can verify behavior indirectly
-            const processPendingUpdates = fileUpdateManager.processPendingFileUpdates;
+            // Trigger the debounced function to capture timing
+            fileUpdateManager.processPendingFileUpdates();
 
-            // We can't easily verify the exact wait time without accessing private properties
-            // Just verify the function was updated
-            expect(processPendingUpdates).toBeDefined();
-        });
+            // Check if wait time matches expectations (half the update frequency in ms)
+            expect(capturedWaitTime).toBe(15 * 1000 / 2);
 
-        it('should handle minimum allowed frequency', () => {
-            mockSettings.fileUpdateFrequency = 1; // Minimum value
-            fileUpdateManager.updateDebounceSettings();
-
-            // Verify the function was updated
-            expect(fileUpdateManager.processPendingFileUpdates).toBeDefined();
-        });
-
-        it('should handle maximum allowed frequency', () => {
-            mockSettings.fileUpdateFrequency = 60; // High value
-            fileUpdateManager.updateDebounceSettings();
-
-            // Verify the function was updated
-            expect(fileUpdateManager.processPendingFileUpdates).toBeDefined();
+            // Restore original setTimeout
+            jest.restoreAllMocks();
         });
 
         it('should call flush on the old function during update', () => {
-            // Set up a spy to verify flush is called
+            // Set up a spy on the old function
             const oldFunction = fileUpdateManager.processPendingFileUpdates;
             const flushSpy = jest.spyOn(oldFunction, 'flush');
 
@@ -400,23 +403,30 @@ describe('FileUpdateManager', () => {
             mockSettings.fileUpdateFrequency = 20;
             fileUpdateManager.updateDebounceSettings();
 
-            // Verify flush was called
+            // Verify flush was called on the old function
             expect(flushSpy).toHaveBeenCalled();
         });
 
-        it('should create a function that uses the new frequency', () => {
-            // Initial frequency
-            mockSettings.fileUpdateFrequency = 5;
-            const initialFunction = fileUpdateManager.processPendingFileUpdates;
-
-            // Change frequency and update
-            mockSettings.fileUpdateFrequency = 30;
+        it('should handle both minimum and maximum allowed frequencies', () => {
+            // Test with minimum value
+            mockSettings.fileUpdateFrequency = 1;
             fileUpdateManager.updateDebounceSettings();
 
-            // Verify a new function was created
-            expect(fileUpdateManager.processPendingFileUpdates).not.toBe(initialFunction);
-        });
+            // Verify debounce function works with minimum timing
+            const minFunction = fileUpdateManager.processPendingFileUpdates;
+            expect(typeof minFunction).toBe('function');
+            expect(typeof minFunction.flush).toBe('function');
 
+            // Test with maximum value
+            mockSettings.fileUpdateFrequency = 60;
+            fileUpdateManager.updateDebounceSettings();
+
+            // Verify debounce function works with maximum timing
+            const maxFunction = fileUpdateManager.processPendingFileUpdates;
+            expect(typeof maxFunction).toBe('function');
+            expect(typeof maxFunction.flush).toBe('function');
+            expect(maxFunction).not.toBe(minFunction);
+        });
     });
 
     describe('isInitialIndexingInProgress', () => {

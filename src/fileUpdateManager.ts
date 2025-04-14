@@ -95,19 +95,36 @@ export class FileUpdateManager {
 			if (filesToUpdate.length > 0) {
 				logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
 
-				// Use Promise.all to wait for all reindexing to complete
-				await Promise.all(filesToUpdate.map(async path => {
-					// Remove from tracking
-					this.modifiedFiles.delete(path);
+				// Update: Process files sequentially or in parallel based on context
+				if (isGloballyInitialized) {
+					// Use Promise.all for parallel processing when embedding store is initialized
+					await Promise.all(filesToUpdate.map(async path => {
+						// Remove from tracking
+						this.modifiedFiles.delete(path);
 
-					// Get the file and reindex
-					const file = this.app.vault.getAbstractFileByPath(path);
-					if (file instanceof TFile && file.extension === 'md') {
-						await this.reindexFile(file);
-					} else {
-						logError(`File not found or not a markdown file: ${path}`);
+						// Get the file and reindex
+						const file = this.app.vault.getAbstractFileByPath(path);
+						if (file instanceof TFile && file.extension === 'md') {
+							await this.reindexFile(file);
+						} else {
+							logError(`File not found or not a markdown file: ${path}`);
+						}
+					}));
+				} else {
+					// Use sequential processing when embedding store is not initialized
+					for (const path of filesToUpdate) {
+						// Remove from tracking
+						this.modifiedFiles.delete(path);
+
+						// Get the file and reindex
+						const file = this.app.vault.getAbstractFileByPath(path);
+						if (file instanceof TFile && file.extension === 'md') {
+							await this.reindexFile(file);
+						} else {
+							logError(`File not found or not a markdown file: ${path}`);
+						}
 					}
-				}));
+				}
 			} else {
 				logDebug(this.settings, 'No files need updating at this time');
 			}
@@ -252,52 +269,11 @@ export class FileUpdateManager {
 		const oldFunction = this.processPendingFileUpdates;
 
 		// Create new debounced function with updated settings
-		this.processPendingFileUpdates = createDebounce(() => {
-			const now = Date.now();
-			const filesToUpdate: string[] = [];
-
-			logDebug(this.settings, `Checking for files to update at ${new Date().toLocaleTimeString()}`);
-			logDebug(this.settings, `Current modified files queue: ${this.modifiedFiles.size} files`);
-
-			// Check if this is directly after initialization to prevent duplicate indexing
-			if (this.modifiedFiles.size > 0) {
-				// Find files that were modified more than the configured update frequency ago
-				const updateDelayMs = this.settings.fileUpdateFrequency * 1000; // Convert to milliseconds
-
-				this.modifiedFiles.forEach((timestamp, path) => {
-					const ageMs = now - timestamp;
-					const shouldUpdate = true; // Always update modified files
-
-					logDebug(this.settings, `File ${path} modified ${Math.round(ageMs/1000)}s ago, should update: ${shouldUpdate}`);
-
-					if (shouldUpdate) {
-						filesToUpdate.push(path);
-					}
-				});
-
-				// Process files that qualify for update
-				if (filesToUpdate.length > 0) {
-					logDebug(this.settings, `Processing ${filesToUpdate.length} modified files for reindexing: ${filesToUpdate.join(', ')}`);
-
-					filesToUpdate.forEach(path => {
-						// Remove from tracking
-						this.modifiedFiles.delete(path);
-
-						// Get the file and reindex
-						const file = this.app.vault.getAbstractFileByPath(path);
-						if (file instanceof TFile && file.extension === 'md') {
-							this.reindexFile(file);
-						} else {
-							logError(`File not found or not a markdown file: ${path}`);
-						}
-					});
-				} else {
-					logDebug(this.settings, 'No files need updating at this time');
-				}
-			} else {
-				logDebug(this.settings, 'No modified files in queue');
-			}
-		}, this.settings.fileUpdateFrequency * 1000 / 2, false); // Wait for half the update frequency
+		this.processPendingFileUpdates = createDebounce(
+			this.processPendingUpdates.bind(this),
+			this.settings.fileUpdateFrequency * 1000 / 2, // Wait for half the update frequency
+			false
+		);
 
 		// Process any pending items with the old function
 		oldFunction?.flush();

@@ -385,7 +385,7 @@ export class AIHelperChatView extends ItemView {
             const searchTerms = query
                 .toLowerCase()
                 .split(/\s+/)
-                .filter(term => term.length >= 3 && !commonShortWords.has(term)) // Filter common words and words under 3 characters
+                .filter(term => term.length >= 2 && !commonShortWords.has(term)) // Filter common words and words under 2 characters
                 .map(term => term.replace(/[^\w\s]/g, ''));
             logDebug(this.settings, `Search terms: ${JSON.stringify(searchTerms)}`);
 

@@ -57,22 +57,13 @@ export class EmbeddingStore {
           // Initialize the embedding model based on settings
           const provider = this.settings.embeddingSettings.provider;
 
-          if (provider === 'openai') {
-              // Use OpenAI embeddings
+          if (provider === 'openai' || provider === 'local') {
               this.embeddingModel = {
                   embed: async (text: string) => {
-                      return await this.generateOpenAIEmbedding(text);
+                      return await this.generateProviderEmbedding(text);
                   }
               };
-              logDebug(this.settings, 'Using OpenAI embeddings');
-          } else if (provider === 'local') {
-              // Use local embeddings
-              this.embeddingModel = {
-                  embed: async (text: string) => {
-                      return await this.generateLocalEmbedding(text);
-                  }
-              };
-              logDebug(this.settings, 'Using local embeddings');
+              logDebug(this.settings, `Using ${provider} embeddings`);
           } else {
               throw new Error('Invalid embedding provider. Must be either "openai" or "local".');
           }
@@ -83,70 +74,32 @@ export class EmbeddingStore {
       }
   }
 
-  async generateOpenAIEmbedding(text: string): Promise<Float32Array> {
+  async generateProviderEmbedding(text: string): Promise<Float32Array> {
       try {
-          const apiKey = this.settings.chatSettings.openaiApiKey;
-          const apiUrl = this.settings.embeddingSettings.openaiApiUrl || 'https://api.openai.com/v1/embeddings';
-          const model = this.settings.embeddingSettings.openaiModel;
+          const provider = this.settings.embeddingSettings.provider;
+          let apiUrl = provider === 'openai'
+              ? (this.settings.embeddingSettings.openaiApiUrl || 'https://api.openai.com/v1/embeddings')
+              : this.settings.embeddingSettings.localApiUrl;
 
-          if (!apiKey) {
-              throw new Error('OpenAI API key is missing. Please configure it in the settings.');
-          }
-
-          const headers: Record<string, string> = {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
-          };
-
-          const requestBody = {
-              model: model,
-              input: text
-          };
-
-          const requestParams: RequestUrlParam = {
-              url: apiUrl,
-              method: 'POST',
-              headers: headers,
-              body: JSON.stringify(requestBody)
-          };
-
-          const response = await requestUrl(requestParams);
-          const responseData = response.json;
-
-          if (responseData.data && responseData.data.length > 0 && responseData.data[0].embedding) {
-              const embedding = new Float32Array(responseData.data[0].embedding);
-
-              // Validate dimensionality
-              if (embedding.length !== this.dimensions) {
-                  logError(`OpenAI embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
-                  // Update the dimensions setting to match the actual embedding
-                  this.dimensions = embedding.length;
-                  this.settings.embeddingSettings.dimensions = embedding.length;
-              }
-
-              return embedding;
-          } else {
-              throw new Error('Invalid response format from OpenAI embeddings API');
-          }
-      } catch (error) {
-          logError('Error generating OpenAI embedding', error);
-          throw error;
-      }
-  }
-
-  async generateLocalEmbedding(text: string): Promise<Float32Array> {
-      try {
-          const apiUrl = this.settings.embeddingSettings.localApiUrl;
-          const model = this.settings.embeddingSettings.localModel;
-
+          // Ensure API URL is defined
           if (!apiUrl) {
-              throw new Error('Local embedding API URL is missing. Please configure it in the settings.');
+              throw new Error(`${provider} API URL is missing. Please configure it in the settings.`);
           }
+
+          const model = provider === 'openai'
+              ? this.settings.embeddingSettings.openaiModel
+              : this.settings.embeddingSettings.localModel;
 
           const headers: Record<string, string> = {
               'Content-Type': 'application/json'
           };
 
+          // Add Authorization header for OpenAI
+          if (provider === 'openai') {
+              const apiKey = this.settings.embeddingSettings.openaiApiKey;
+              headers['Authorization'] = `Bearer ${apiKey}`;
+          }
+
           const requestBody = {
               model: model,
               input: text
@@ -167,7 +120,7 @@ export class EmbeddingStore {
 
               // Validate dimensionality
               if (embedding.length !== this.dimensions) {
-                  logError(`Local embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
+                  logError(`${provider} embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
                   // Update the dimensions setting to match the actual embedding
                   this.dimensions = embedding.length;
                   this.settings.embeddingSettings.dimensions = embedding.length;
@@ -175,10 +128,10 @@ export class EmbeddingStore {
 
               return embedding;
           } else {
-              throw new Error('Invalid response format from local embeddings API');
+              throw new Error(`Invalid response format from ${provider} embeddings API`);
           }
       } catch (error) {
-          logError('Error generating local embedding', error);
+          logError(`Error generating ${this.settings.embeddingSettings.provider} embedding`, error);
           throw error;
       }
   }
@@ -231,18 +184,25 @@ export class EmbeddingStore {
   async generateEmbedding(text: string): Promise<Float32Array> {
       try {
           if (!this.embeddingModel) {
-              logError('Embedding model not initialized');
               throw new Error('Embedding model not initialized');
           }
+
+          // Check provider-specific requirements before attempting to generate embeddings
+          if (this.settings.embeddingSettings.provider === 'openai' && !this.settings.embeddingSettings.openaiApiKey) {
+              throw new Error('OpenAI API key is missing. Please configure it in the settings.');
+          } else if (this.settings.embeddingSettings.provider === 'local' && !this.settings.embeddingSettings.localApiUrl) {
+              throw new Error('Local API URL is missing. Please configure it in the settings.');
+          }
+
           const embedding = await this.embeddingModel.embed(text);
           if (!embedding || !(embedding instanceof Float32Array)) {
-              logError(`Invalid embedding generated: ${typeof embedding}`);
               throw new Error('Invalid embedding generated');
           }
           return embedding;
       } catch (error) {
           logError('Error generating embedding', error);
-          throw error;
+          // Re-throw the error with a clear message
+          throw new Error(`Failed to generate embedding: ${error.message}`);
       }
   }
 
@@ -578,8 +538,12 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
             document.dispatchEvent(event);
             logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
         } catch (error) {
+            // Reset initialization state on error
+            isGloballyInitialized = false;
+            globalInitializationPromise = null;
             logError('Error initializing vector search', error);
-            logError('Error initializing vector search. Some features may not work correctly.');
+            // Re-throw the error to fail the entire initialization promise
+            throw error;
         }
     })();
 

@@ -112,7 +112,11 @@ class AIHelperModal extends Modal {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
       if (this.settings.summarizeSettings.provider === 'openai') {
-        headers['Authorization'] = `Bearer ${this.settings.chatSettings.openaiApiKey}`;
+        const apiKey = this.settings.summarizeSettings.openaiApiKey;
+        if (!apiKey) {
+          throw new Error('OpenAI API key is missing. Please configure it in the settings.');
+        }
+        headers['Authorization'] = `Bearer ${apiKey}`;
       }
 
       const response = await fetch(apiUrl, {

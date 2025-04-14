@@ -5,6 +5,7 @@ export interface EmbeddingSettings {
   provider: 'openai' | 'local';
   openaiModel: string;
   openaiApiUrl?: string;
+  openaiApiKey?: string;
   localApiUrl?: string;
   localModel?: string;
   chunkSize: number;
@@ -26,12 +27,14 @@ export interface ChatSettings {
   displayWelcomeMessage: boolean;
   similarity: number;
   maxContextLength: number;
+  titleMatchBoost: number;
 }
 
 export interface SummarizeSettings {
   provider: 'openai' | 'local';
   openaiModel: string;
   openaiApiUrl?: string;
+  openaiApiKey?: string;
   localApiUrl?: string;
   localModel?: string;
   maxTokens: number;
@@ -49,39 +52,42 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   chatSettings: {
-    provider: 'openai',
+    provider: 'local',
     openaiModel: 'gpt-3.5-turbo',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
     openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
-    localModel: 'mistral-7b-instruct',
+    localModel: 'qwen2-7b-instruct',
     maxTokens: 500,
     temperature: 0.7,
     maxNotesToSearch: 20,
     displayWelcomeMessage: true,
     similarity: 0.5,
     maxContextLength: 4000,
+    titleMatchBoost: 0.5,
   },
   embeddingSettings: {
-    provider: 'openai',
+    provider: 'local',
     openaiModel: 'text-embedding-3-small',
     openaiApiUrl: 'https://api.openai.com/v1/embeddings',
+    openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/embeddings',
-    localModel: 'all-MiniLM-L6-v2',
+    localModel: 'text-embedding-all-minilm-l6-v2-embedding',
     chunkSize: 1000,
     chunkOverlap: 200,
     dimensions: 384,
-    updateMode: 'onUpdate'
+    updateMode: 'none'
   },
   openChatOnStartup: false,
   debugMode: true,
   fileUpdateFrequency: 30, // Default to 30 seconds
   summarizeSettings: {
-    provider: 'openai',
+    provider: 'local',
     openaiModel: 'gpt-3.5-turbo',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
+    openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
-    localModel: 'mistral-7b-instruct',
+    localModel: 'qwen2-7b-instruct',
     maxTokens: 500,
     temperature: 0.7
   },
@@ -100,11 +106,11 @@ export class AIHelperSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     // Chat Settings
-    containerEl.createEl('h3', { text: 'Chat settings' });
+    new Setting(containerEl).setName('Chat').setHeading();
 
     new Setting(containerEl)
-      .setName('Provider')
-      .setDesc('Choose the provider for chat')
+      .setName('AI Provider')
+      .setDesc('Choose the AI provider for chat')
       .addDropdown(dropdown => {
         dropdown
           .addOption('openai', 'OpenAI')
@@ -175,6 +181,17 @@ export class AIHelperSettingTab extends PluginSettingTab {
     }
 
     new Setting(containerEl)
+      .setName('Max context length')
+      .setDesc('Maximum number of characters to include in the context. This will impact the number of notes that can be searched for context.')
+      .addText(text => text
+        .setPlaceholder('Enter max context length')
+        .setValue(this.plugin.settings.chatSettings.maxContextLength.toString())
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.chatSettings.maxContextLength;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName('Max tokens')
       .setDesc('Maximum number of tokens to generate')
       .addText(text => text
@@ -222,6 +239,20 @@ export class AIHelperSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName('Title match boost')
+      .setDesc('Boost for title matches')
+      .addText(text => text
+        .setPlaceholder('Enter title match boost (0.0 to 1.0)')
+        .setValue(this.plugin.settings.chatSettings.titleMatchBoost.toString())
+        .onChange(async (value) => {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+            this.plugin.settings.chatSettings.titleMatchBoost = parsed || DEFAULT_SETTINGS.chatSettings.titleMatchBoost;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
       .setName('Display welcome message')
       .setDesc('Show a welcome message when opening the chat or after reset')
       .addToggle(toggle => toggle
@@ -231,23 +262,12 @@ export class AIHelperSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    new Setting(containerEl)
-      .setName('Max context length')
-      .setDesc('Maximum number of characters to include in the context')
-      .addText(text => text
-        .setPlaceholder('Enter max context length')
-        .setValue(this.plugin.settings.chatSettings.maxContextLength.toString())
-        .onChange(async (value) => {
-          this.plugin.settings.chatSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.chatSettings.maxContextLength;
-          await this.plugin.saveSettings();
-        }));
-
     // Embedding Settings
-    containerEl.createEl('h3', { text: 'Embedding Settings' });
+    new Setting(containerEl).setName('Embeddings').setHeading();
 
     new Setting(containerEl)
-      .setName('Provider')
-      .setDesc('Choose the provider for embeddings')
+      .setName('AI Provider')
+      .setDesc('Choose the AI provider for embeddings')
       .addDropdown(dropdown => {
         dropdown
           .addOption('openai', 'OpenAI')
@@ -261,6 +281,17 @@ export class AIHelperSettingTab extends PluginSettingTab {
       });
 
     if (this.plugin.settings.embeddingSettings.provider === 'openai') {
+      new Setting(containerEl)
+        .setName('OpenAI API key')
+        .setDesc('Your OpenAI API key')
+        .addText(text => text
+          .setPlaceholder('Enter your OpenAI API key')
+          .setValue(this.plugin.settings.embeddingSettings.openaiApiKey || '')
+          .onChange(async (value) => {
+            this.plugin.settings.embeddingSettings.openaiApiKey = value;
+            await this.plugin.saveSettings();
+          }));
+
       new Setting(containerEl)
         .setName('OpenAI model')
         .setDesc('The model to use for embeddings')
@@ -364,11 +395,11 @@ export class AIHelperSettingTab extends PluginSettingTab {
         }));
 
     // Summarize Settings
-    containerEl.createEl('h3', { text: 'Summarize Settings' });
+    new Setting(containerEl).setName('Summarize').setHeading();
 
     new Setting(containerEl)
-      .setName('Provider')
-      .setDesc('Choose the provider for summarization')
+      .setName('AI Provider')
+      .setDesc('Choose the AI provider for summarization')
       .addDropdown(dropdown => {
         dropdown
           .addOption('openai', 'OpenAI')
@@ -382,6 +413,17 @@ export class AIHelperSettingTab extends PluginSettingTab {
       });
 
     if (this.plugin.settings.summarizeSettings.provider === 'openai') {
+      new Setting(containerEl)
+        .setName('OpenAI API key')
+        .setDesc('Your OpenAI API key')
+        .addText(text => text
+          .setPlaceholder('Enter your OpenAI API key')
+          .setValue(this.plugin.settings.summarizeSettings.openaiApiKey || '')
+          .onChange(async (value) => {
+            this.plugin.settings.summarizeSettings.openaiApiKey = value;
+            await this.plugin.saveSettings();
+          }));
+
       new Setting(containerEl)
         .setName('OpenAI model')
         .setDesc('The model to use for summarization')
@@ -450,7 +492,7 @@ export class AIHelperSettingTab extends PluginSettingTab {
         }));
 
     // General Settings
-    containerEl.createEl('h3', { text: 'General Settings' });
+    new Setting(containerEl).setName('General').setHeading();
 
     new Setting(containerEl)
       .setName('Open  chat on startup')

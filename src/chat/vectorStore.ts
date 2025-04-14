@@ -82,7 +82,7 @@ export class VectorStore {
           const filename = path.split('/').pop()?.toLowerCase() || '';
           const titleScore = searchTerms.reduce((score, term) => {
               if (filename.includes(term.toLowerCase())) {
-                  score += 0.5;
+                  score += this.settings.chatSettings.titleMatchBoost;
               }
               return score;
           }, 0);

@@ -6,9 +6,13 @@ import { EmbeddingStore } from './chat/embeddingStore';
 import { ContextManager } from './chat/contextManager';
 import { LLMConnector } from './chat/llmConnector';
 import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
+import { processQuery } from './nlp';
 
 // Define the view type for the AI Chat
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
+
+// Define welcome message
+const WELCOME_MESSAGE = "Hello! I'm your AI helper. I can help you explore your notes. Ask me anything about your notes!";
 
 // Interface for a chat message
 export interface ChatMessage {
@@ -73,6 +77,7 @@ export class AIHelperChatView extends ItemView {
     private llmConnector: LLMConnector;
     private isProcessing = false;
     private initializationPromise: Promise<void> | null = null;
+    private abortController: AbortController | null = null;
 
     constructor(leaf: WorkspaceLeaf, settings: Settings) {
         super(leaf);
@@ -88,8 +93,15 @@ export class AIHelperChatView extends ItemView {
         // Set up the initialization promise
         this.initializationPromise = (async () => {
             try {
+                const startTime = Date.now();
+                const timeoutMs = 5000; // 5 seconds timeout
+
                 // Wait for initialization to complete if it's in progress or hasn't started
                 while (!isGloballyInitialized) {
+                    if (Date.now() - startTime > timeoutMs) {
+                        throw new Error('Initialization timed out after 5 seconds');
+                    }
+
                     if (globalInitializationPromise) {
                         logDebug(settings, 'Waiting for existing initialization to complete');
                         await globalInitializationPromise;
@@ -140,7 +152,7 @@ export class AIHelperChatView extends ItemView {
 
         // Add welcome message if enabled in settings
         if (this.settings.chatSettings.displayWelcomeMessage) {
-            this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+            this.addAssistantMessage(WELCOME_MESSAGE);
         }
     }
 
@@ -148,14 +160,10 @@ export class AIHelperChatView extends ItemView {
         // Create main content area
         const mainContent = container.createDiv({ cls: 'ai-helper-chat-main' });
 
-        // Create header
-        const headerSection = mainContent.createDiv({ cls: 'ai-helper-chat-header' });
-        headerSection.createEl('h3', { text: 'AI Assistant' });
-
         // Create context section for relevant notes
         const contextSection = mainContent.createDiv({ cls: 'ai-helper-context-section' });
         const contextHeader = contextSection.createDiv({ cls: 'ai-helper-context-header' });
-        contextHeader.setText('Relevant Notes');
+        contextHeader.setText('Relevant notes');
         this.contextContainer = contextSection.createDiv({ cls: 'ai-helper-context-notes' });
 
         // Create messages container
@@ -239,7 +247,7 @@ export class AIHelperChatView extends ItemView {
 
             // Add last updated time
             const lastUpdatedEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-updated' });
-            const lastUpdated = new Date(note.file.stat.mtime);
+            const lastUpdated = note.file.stat?.mtime ? new Date(note.file.stat.mtime) : new Date();
             const timeAgo = this.getTimeAgoString(lastUpdated);
             lastUpdatedEl.setText(`Last updated: ${timeAgo}`);
 
@@ -313,11 +321,11 @@ export class AIHelperChatView extends ItemView {
         this.inputField.disabled = processing;
         if (processing) {
             this.sendButton.setButtonText('Processing...');
-            this.sendButton.buttonEl.disabled = true;
+            this.sendButton.setDisabled(true);
             this.inputField.placeholder = 'Please wait while I process your message...';
         } else {
             this.sendButton.setButtonText('Send');
-            this.sendButton.buttonEl.disabled = false;
+            this.sendButton.setDisabled(false);
             this.inputField.placeholder = 'Ask about your notes...';
         }
     }
@@ -325,6 +333,10 @@ export class AIHelperChatView extends ItemView {
     async sendMessage() {
         const message = this.inputField.value.trim();
         if (!message || this.isProcessing) return;
+
+        // Create new AbortController for this operation
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
 
         // Set processing state
         this.setProcessingState(true);
@@ -352,16 +364,19 @@ export class AIHelperChatView extends ItemView {
             this.displayContextNotes();
 
             // Generate response using the found notes
-            const response = await this.generateResponse(message);
+            const response = await this.generateResponse(message, signal);
 
             // Add assistant response to chat
             this.addAssistantMessage(response.content);
         } catch (error) {
-            logError('Error processing message', error);
-            this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+            if (error.name !== 'AbortError') {
+                logError('Error processing message', error);
+                this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+            }
         } finally {
             // Reset processing state
             this.setProcessingState(false);
+            this.abortController = null;
         }
     }
 
@@ -369,28 +384,26 @@ export class AIHelperChatView extends ItemView {
         try {
             logDebug(this.settings, `Starting search for query: ${query}`);
 
-            // Generate embedding for the query
-            const queryEmbedding = await this.embeddingStore.generateEmbedding(query);
-            logDebug(this.settings, 'Generated query embedding');
+            // Process the query using our NLP utilities
+            const processedQuery = processQuery(query, this.settings);
+            logDebug(this.settings, `Processed query: ${JSON.stringify(processedQuery)}`);
 
-            // Extract key terms for title matching
-            const searchTerms = query
-                .toLowerCase()
-                .split(/\s+/)
-                .filter(term => term.length > 3)
-                .map(term => term.replace(/[^\w\s]/g, ''));
-            logDebug(this.settings, `Search terms: ${JSON.stringify(searchTerms)}`);
+            // Generate embedding for the processed query
+            const queryEmbedding = await this.embeddingStore.generateEmbedding(processedQuery.processed);
+            logDebug(this.settings, 'Generated query embedding');
 
             // Get the active file if any
             const activeFile = this.app.workspace.getActiveFile();
             const file = activeFile ? activeFile : undefined;
 
-            // Find semantically similar content
+            // Find semantically similar content using expanded tokens
             const results = await this.vectorStore.search(queryEmbedding, {
                 similarity: this.settings.chatSettings.similarity,
                 limit: this.settings.chatSettings.maxNotesToSearch,
-                searchTerms,
-                file // Pass the active file for recency context
+                searchTerms: processedQuery.expandedTokens,
+                file, // Pass the active file for recency context
+                phrases: processedQuery.phrases, // Pass preserved phrases for exact matching
+                query: query // Pass the original query for additional processing
             });
 
             logDebug(this.settings, `Vector search results: ${JSON.stringify(results.map(r => ({
@@ -451,7 +464,7 @@ export class AIHelperChatView extends ItemView {
         }
     }
 
-    async generateResponse(userQuery: string): Promise<ChatMessage> {
+    async generateResponse(userQuery: string, signal?: AbortSignal): Promise<ChatMessage> {
         // If no relevant notes were found, return a clear message
         if (this.relevantNotes.length === 0) {
             return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
@@ -478,13 +491,19 @@ If you're not sure about something, say so clearly.`;
         messages.unshift({ role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` });
 
         // Send to LLM for processing
-        const response = await this.llmConnector.generateResponse(messages);
+        const response = await this.llmConnector.generateResponse(messages, signal);
         return response;
     }
 
     // Add a method to reset the chat
-    resetChat() {
-        // Clear messages
+    async resetChat() {
+        // If there's an in-progress query, cancel it using AbortController
+        if (this.isProcessing && this.abortController) {
+            this.abortController.abort();
+            this.abortController = null;
+        }
+
+        // Clear messages and message history
         this.messages = [];
         this.messagesContainer.empty();
 
@@ -492,9 +511,21 @@ If you're not sure about something, say so clearly.`;
         this.relevantNotes = [];
         this.displayContextNotes();
 
+        // Reset input field
+        this.inputField.value = '';
+        this.inputField.disabled = false;
+        this.inputField.placeholder = 'Ask about your notes...';
+
+        // Reset send button
+        this.sendButton.setButtonText('Send');
+        this.sendButton.setDisabled(false);
+
+        // Reset processing state
+        this.setProcessingState(false);
+
         // Add welcome message if enabled in settings
         if (this.settings.chatSettings.displayWelcomeMessage) {
-            this.addAssistantMessage("Hello! I'm your AI assistant. I can help you explore your notes. Ask me anything about your notes!");
+            this.addAssistantMessage(WELCOME_MESSAGE);
         }
     }
 }

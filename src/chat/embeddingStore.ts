@@ -1,12 +1,29 @@
-import { TFile, requestUrl, RequestUrlParam } from 'obsidian';
+import { TFile, requestUrl, RequestUrlParam, App } from 'obsidian';
 import { Settings } from '../settings';
 import { VectorStore } from './vectorStore';
 import { NoteEmbedding } from '../chat';
 import { logDebug, logError } from '../utils';
-import { App, Notice } from 'obsidian';
+import { Notice } from 'obsidian';
+import { processQuery } from '../nlp';
 
 interface EmbeddingModel {
   embed: (text: string) => Promise<Float32Array>;
+}
+
+interface PersistedEmbeddingStore {
+    version: number;
+    lastUpdated: number;
+    embeddings: {
+        [path: string]: {
+            path: string;
+            chunks: {
+                content: string;
+                embedding: number[];
+                position: number;
+            }[];
+            lastModified: number;
+        };
+    };
 }
 
 // Static initialization state to track across instances
@@ -26,11 +43,33 @@ export class EmbeddingStore {
   private vectorStore: VectorStore;
   private embeddingModel: EmbeddingModel;
   private dimensions: number;
+  private app: App;
 
-  constructor(settings: Settings, vectorStore: VectorStore) {
+  constructor(settings: Settings, vectorStore: VectorStore, app: App) {
       this.settings = settings;
       this.vectorStore = vectorStore;
       this.dimensions = settings.embeddingSettings.dimensions;
+      this.app = app;
+  }
+
+  // Add this method to support the tests
+  async searchNotes(query: string, maxResults: number) {
+    if (!this.vectorStore || this.isVectorStoreEmpty()) {
+      return [];
+    }
+
+    try {
+      const queryEmbedding = await this.generateEmbedding(query);
+      const searchResults = await this.vectorStore.search(queryEmbedding, {
+        similarity: 0.5, // Default similarity threshold
+        limit: maxResults,
+        searchTerms: [] // No specific terms to boost
+      });
+      return searchResults;
+    } catch (error) {
+      logError('Error searching notes', error);
+      return [];
+    }
   }
 
   async initialize() {
@@ -39,22 +78,13 @@ export class EmbeddingStore {
           // Initialize the embedding model based on settings
           const provider = this.settings.embeddingSettings.provider;
 
-          if (provider === 'openai') {
-              // Use OpenAI embeddings
+          if (provider === 'openai' || provider === 'local') {
               this.embeddingModel = {
                   embed: async (text: string) => {
-                      return await this.generateOpenAIEmbedding(text);
+                      return await this.generateProviderEmbedding(text);
                   }
               };
-              logDebug(this.settings, 'Using OpenAI embeddings');
-          } else if (provider === 'local') {
-              // Use local embeddings
-              this.embeddingModel = {
-                  embed: async (text: string) => {
-                      return await this.generateLocalEmbedding(text);
-                  }
-              };
-              logDebug(this.settings, 'Using local embeddings');
+              logDebug(this.settings, `Using ${provider} embeddings`);
           } else {
               throw new Error('Invalid embedding provider. Must be either "openai" or "local".');
           }
@@ -65,70 +95,32 @@ export class EmbeddingStore {
       }
   }
 
-  async generateOpenAIEmbedding(text: string): Promise<Float32Array> {
+  async generateProviderEmbedding(text: string): Promise<Float32Array> {
       try {
-          const apiKey = this.settings.chatSettings.openaiApiKey;
-          const apiUrl = this.settings.embeddingSettings.openaiApiUrl || 'https://api.openai.com/v1/embeddings';
-          const model = this.settings.embeddingSettings.openaiModel;
+          const provider = this.settings.embeddingSettings.provider;
+          let apiUrl = provider === 'openai'
+              ? (this.settings.embeddingSettings.openaiApiUrl || 'https://api.openai.com/v1/embeddings')
+              : this.settings.embeddingSettings.localApiUrl;
 
-          if (!apiKey) {
-              throw new Error('OpenAI API key is missing. Please configure it in the settings.');
-          }
-
-          const headers: Record<string, string> = {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${apiKey}`
-          };
-
-          const requestBody = {
-              model: model,
-              input: text
-          };
-
-          const requestParams: RequestUrlParam = {
-              url: apiUrl,
-              method: 'POST',
-              headers: headers,
-              body: JSON.stringify(requestBody)
-          };
-
-          const response = await requestUrl(requestParams);
-          const responseData = response.json;
-
-          if (responseData.data && responseData.data.length > 0 && responseData.data[0].embedding) {
-              const embedding = new Float32Array(responseData.data[0].embedding);
-
-              // Validate dimensionality
-              if (embedding.length !== this.dimensions) {
-                  logError(`OpenAI embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
-                  // Update the dimensions setting to match the actual embedding
-                  this.dimensions = embedding.length;
-                  this.settings.embeddingSettings.dimensions = embedding.length;
-              }
-
-              return embedding;
-          } else {
-              throw new Error('Invalid response format from OpenAI embeddings API');
-          }
-      } catch (error) {
-          logError('Error generating OpenAI embedding', error);
-          throw error;
-      }
-  }
-
-  async generateLocalEmbedding(text: string): Promise<Float32Array> {
-      try {
-          const apiUrl = this.settings.embeddingSettings.localApiUrl;
-          const model = this.settings.embeddingSettings.localModel;
-
+          // Ensure API URL is defined
           if (!apiUrl) {
-              throw new Error('Local embedding API URL is missing. Please configure it in the settings.');
+              throw new Error(`${provider} API URL is missing. Please configure it in the settings.`);
           }
+
+          const model = provider === 'openai'
+              ? this.settings.embeddingSettings.openaiModel
+              : this.settings.embeddingSettings.localModel;
 
           const headers: Record<string, string> = {
               'Content-Type': 'application/json'
           };
 
+          // Add Authorization header for OpenAI
+          if (provider === 'openai') {
+              const apiKey = this.settings.embeddingSettings.openaiApiKey;
+              headers['Authorization'] = `Bearer ${apiKey}`;
+          }
+
           const requestBody = {
               model: model,
               input: text
@@ -149,7 +141,7 @@ export class EmbeddingStore {
 
               // Validate dimensionality
               if (embedding.length !== this.dimensions) {
-                  logError(`Local embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
+                  logError(`${provider} embedding dimensionality (${embedding.length}) does not match expected dimensionality (${this.dimensions}). This may cause issues with vector search.`);
                   // Update the dimensions setting to match the actual embedding
                   this.dimensions = embedding.length;
                   this.settings.embeddingSettings.dimensions = embedding.length;
@@ -157,10 +149,10 @@ export class EmbeddingStore {
 
               return embedding;
           } else {
-              throw new Error('Invalid response format from local embeddings API');
+              throw new Error(`Invalid response format from ${provider} embeddings API`);
           }
       } catch (error) {
-          logError('Error generating local embedding', error);
+          logError(`Error generating ${this.settings.embeddingSettings.provider} embedding`, error);
           throw error;
       }
   }
@@ -211,21 +203,68 @@ export class EmbeddingStore {
   }
 
   async generateEmbedding(text: string): Promise<Float32Array> {
-      try {
-          if (!this.embeddingModel) {
-              logError('Embedding model not initialized');
-              throw new Error('Embedding model not initialized');
-          }
-          const embedding = await this.embeddingModel.embed(text);
-          if (!embedding || !(embedding instanceof Float32Array)) {
-              logError(`Invalid embedding generated: ${typeof embedding}`);
-              throw new Error('Invalid embedding generated');
-          }
-          return embedding;
-      } catch (error) {
-          logError('Error generating embedding', error);
-          throw error;
+    // Apply the same processing to text being embedded as we do to queries
+    // This ensures consistency between query and document processing
+    const processed = typeof text === 'string' ? text : '';
+
+    try {
+      // For embedding generation, we don't need the full query processing with expansion,
+      // but we want consistent stemming and stopword removal
+      const processedText = processQuery(processed, this.settings).processed;
+
+      if (this.settings.embeddingSettings.provider === 'openai') {
+        return await this.generateOpenAIEmbedding(processedText);
+      } else {
+        return await this.generateLocalEmbedding(processedText);
       }
+    } catch (error) {
+      console.error('Error generating embedding:', error);
+      throw error;
+    }
+  }
+
+  // Generate embedding using OpenAI API
+  private async generateOpenAIEmbedding(text: string): Promise<Float32Array> {
+    try {
+      if (!this.embeddingModel) {
+        throw new Error('Embedding model not initialized');
+      }
+
+      if (!this.settings.embeddingSettings.openaiApiKey) {
+        throw new Error('OpenAI API key is missing. Please configure it in the settings.');
+      }
+
+      const embedding = await this.embeddingModel.embed(text);
+      if (!embedding || !(embedding instanceof Float32Array)) {
+        throw new Error('Invalid embedding generated from OpenAI');
+      }
+      return embedding;
+    } catch (error) {
+      logError('Error generating OpenAI embedding', error);
+      throw new Error(`Failed to generate OpenAI embedding: ${error.message}`);
+    }
+  }
+
+  // Generate embedding using local API
+  private async generateLocalEmbedding(text: string): Promise<Float32Array> {
+    try {
+      if (!this.embeddingModel) {
+        throw new Error('Embedding model not initialized');
+      }
+
+      if (!this.settings.embeddingSettings.localApiUrl) {
+        throw new Error('Local API URL is missing. Please configure it in the settings.');
+      }
+
+      const embedding = await this.embeddingModel.embed(text);
+      if (!embedding || !(embedding instanceof Float32Array)) {
+        throw new Error('Invalid embedding generated from local provider');
+      }
+      return embedding;
+    } catch (error) {
+      logError('Error generating local embedding', error);
+      throw new Error(`Failed to generate local embedding: ${error.message}`);
+    }
   }
 
   private chunkContent(content: string): { content: string; position: number }[] {
@@ -379,12 +418,150 @@ export class EmbeddingStore {
   }
 
   // Helper method to validate note content before processing
-  private isValidContent(path: string, content: string): boolean {
+  public isValidContent(path: string, content: string): boolean {
       if (!content || content.trim().length < 50) {
           logDebug(this.settings, `File ${path} is too short to generate meaningful embeddings (${content.length} chars). Skipping.`);
           return false;
       }
       return true;
+  }
+
+  async saveToFile() {
+      try {
+          const data: PersistedEmbeddingStore = {
+              version: 1,
+              lastUpdated: Date.now(),
+              embeddings: Object.fromEntries(
+                  Array.from(this.embeddings.entries()).map(([path, embedding]) => [
+                      path,
+                      {
+                          ...embedding,
+                          chunks: embedding.chunks.map(chunk => ({
+                              ...chunk,
+                              embedding: Array.from(chunk.embedding)
+                          })),
+                          lastModified: (this.app.vault.getAbstractFileByPath(path) as TFile)?.stat?.mtime || Date.now()
+                      }
+                  ])
+              )
+          };
+          await this.app.vault.adapter.write(
+              '.obsidian/plugins/obsidian-ai-helper/embeddings.json',
+              JSON.stringify(data)
+          );
+          logDebug(this.settings, 'Successfully saved embeddings to file');
+      } catch (error) {
+          logError('Error saving embeddings to file', error);
+      }
+  }
+
+  async loadFromFile() {
+      try {
+          const filePath = '.obsidian/plugins/obsidian-ai-helper/embeddings.json';
+
+          // Check if file exists first
+          const exists = await this.app.vault.adapter.exists(filePath);
+          if (!exists) {
+              logDebug(this.settings, 'No existing embeddings file found. Starting with empty index.');
+              return;
+          }
+
+          const data = JSON.parse(
+              await this.app.vault.adapter.read(filePath)
+          ) as PersistedEmbeddingStore;
+
+          // Clear existing embeddings
+          this.embeddings.clear();
+          this.vectorStore.clear();
+
+          // Load embeddings
+          for (const [path, embedding] of Object.entries(data.embeddings)) {
+              const file = this.app.vault.getAbstractFileByPath(path);
+              if (file instanceof TFile) {
+                  // Check if file has been modified since last save
+                  if (file.stat.mtime > embedding.lastModified) {
+                      // File changed, needs reindexing
+                      const content = await this.app.vault.cachedRead(file);
+                      await this.addNote(file, content);
+                  } else {
+                      // File unchanged, load from cache
+                      const noteEmbedding: NoteEmbedding = {
+                          path: embedding.path,
+                          chunks: embedding.chunks.map(chunk => ({
+                              ...chunk,
+                              embedding: new Float32Array(chunk.embedding)
+                          }))
+                      };
+                      this.embeddings.set(path, noteEmbedding);
+                      this.vectorStore.addEmbedding(path, noteEmbedding);
+                  }
+              }
+          }
+          logDebug(this.settings, 'Successfully loaded embeddings from file');
+      } catch (error) {
+          // Only log as debug since this is expected on first run
+          if (error.code === 'ENOENT') {
+              logDebug(this.settings, 'No existing embeddings file found. Starting with empty index.');
+          } else {
+              // For other errors, log as error and reindex
+              logError('Error loading embeddings from file', error);
+              // If load fails for other reasons, reindex everything
+              await this.reindexAll();
+          }
+      }
+  }
+
+  private async reindexAll() {
+      const files = this.app.vault.getMarkdownFiles();
+      logDebug(this.settings, `Reindexing all ${files.length} files`);
+
+      // Show progress notice for reindexing
+      const progressNotice = new Notice('', 0);
+      const progressElement = progressNotice.noticeEl.createDiv();
+      progressElement.setText('Initializing index...');
+
+      try {
+          let processedCount = 0;
+          for (const file of files) {
+              try {
+                  const content = await this.app.vault.cachedRead(file);
+                  if (this.isValidContent(file.path, content)) {
+                      await this.addNote(file, content);
+                  }
+                  processedCount++;
+                  progressElement.setText(
+                      `Indexing files: ${processedCount}/${files.length} (${file.path})`
+                  );
+              } catch (error) {
+                  logError(`Error reindexing file ${file.path}`, error);
+              }
+          }
+
+          // Save the embeddings after reindexing
+          await this.saveToFile();
+
+          // Show completion notice
+          new Notice(`Indexing complete: ${processedCount} files processed`, 3000);
+      } catch (error) {
+          new Notice('Error during reindexing: ' + error, 10000);
+          logError('Error during reindexing', error);
+          throw error;
+      } finally {
+          progressNotice.hide();
+      }
+  }
+
+  getEmbeddedPaths(): string[] {
+      return Array.from(this.embeddings.keys());
+  }
+
+  getEmbedding(path: string): NoteEmbedding | undefined {
+      return this.embeddings.get(path);
+  }
+
+  // Helper method to check if vector store is empty
+  private isVectorStoreEmpty(): boolean {
+    return this.embeddings.size === 0;
   }
 }
 
@@ -404,7 +581,7 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
     }
 
     if (!globalEmbeddingStore) {
-        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore);
+        globalEmbeddingStore = new EmbeddingStore(settings, globalVectorStore, app);
     }
 
     // Start the initialization process asynchronously
@@ -412,76 +589,118 @@ export async function initializeEmbeddingSystem(settings: Settings, app: App): P
         try {
             await globalEmbeddingStore.initialize();
 
-            // Index all markdown files
-            const files = app.vault.getMarkdownFiles();
-            logDebug(settings, `Starting to index ${files.length} notes for vector search`);
+            // Load cached embeddings first
+            await globalEmbeddingStore.loadFromFile();
 
-            if (files.length === 0) {
-                logError("No markdown files found in the vault. This is unexpected.");
-
-                // Add a more detailed log to help diagnose the issue
-                try {
-                    const allFiles = app.vault.getAllLoadedFiles();
-                    logDebug(settings, `Total files in vault: ${allFiles.length}`);
-                    if (allFiles.length > 0) {
-                        logDebug(settings, `Types of files: ${allFiles.slice(0, 5).map(f => f.constructor.name).join(', ')}...`);
-                    }
-                } catch (e) {
-                    logError("Error inspecting vault files", e);
-                }
+            // Only scan for changes if in onLoad or onUpdate mode
+            if (['onLoad', 'onUpdate'].includes(settings.embeddingSettings.updateMode)) {
+                // Scan for changes and update as needed
+                await scanForChanges(app, settings, true);
             }
 
-            // Create a custom notification for progress tracking if debug mode is enabled
-            let progressNotice: Notice | null = null;
-            let progressElement: HTMLElement | null = null;
-
-            progressNotice = new Notice('', 0);
-            progressElement = progressNotice.noticeEl.createDiv();
-            progressElement.setText(`Indexing notes: 0/${files.length}`);
-
-            let processedCount = 0;
-            for (const file of files) {
-                try {
-                    logDebug(settings, `Processing file: ${file.path}`);
-                    const content = await app.vault.cachedRead(file);
-                    await globalEmbeddingStore.addNote(file, content);
-
-                    // Update progress notification
-                    processedCount++;
-                    if (progressElement) {
-                        progressElement.setText(`Indexing notes: ${processedCount}/${files.length}`);
-                    }
-                } catch (error) {
-                    logError(`Error indexing note ${file.path}`, error);
-                }
-            }
-
-            // Show completion notification
-            if (progressNotice) {
-                progressNotice.hide(); // Hide the progress notification
-                new Notice(`Indexed ${files.length} notes for vector search`, 3000);
-            }
-
-            logDebug(settings, `Indexed ${files.length} notes for vector search`);
             isGloballyInitialized = true;
 
             // Dispatch a custom event that the plugin can listen for
-            // to trigger processing of any pending file updates
             logDebug(settings, "Embedding initialization complete");
-
-            // Create custom event with payload indicating this is initial indexing
             const event = new CustomEvent('ai-helper-indexing-complete', {
                 detail: { isInitialIndexing: true }
             });
             document.dispatchEvent(event);
             logDebug(settings, "Dispatched event: ai-helper-indexing-complete with isInitialIndexing=true");
-
         } catch (error) {
+            // Reset initialization state on error
+            isGloballyInitialized = false;
+            globalInitializationPromise = null;
             logError('Error initializing vector search', error);
-            // Use console error instead of Notice to avoid UI blocking
-            logError('Error initializing vector search. Some features may not work correctly.');
+            // Re-throw the error to fail the entire initialization promise
+            throw error;
         }
     })();
 
     return globalInitializationPromise;
+}
+
+async function scanForChanges(app: App, settings: Settings, isInitialLoad: boolean = false): Promise<void> {
+    // Don't scan if update mode is 'none'
+    if (settings.embeddingSettings.updateMode === 'none') return;
+
+    // Don't scan for changes if in 'onLoad' mode and this isn't the initial load
+    if (settings.embeddingSettings.updateMode === 'onLoad' && !isInitialLoad) return;
+
+    if (!globalEmbeddingStore) return;
+
+    const files = app.vault.getMarkdownFiles();
+    const changedFiles = [];
+    const deletedPaths = new Set<string>();
+
+    // First, identify deleted files by comparing cached paths with existing files
+    const existingPaths = new Set(files.map(f => f.path));
+    for (const cachedPath of globalEmbeddingStore.getEmbeddedPaths()) {
+        if (!existingPaths.has(cachedPath)) {
+            deletedPaths.add(cachedPath);
+        }
+    }
+
+    // Then identify modified files
+    for (const file of files) {
+        const content = await app.vault.cachedRead(file);
+        // Skip files that are too small
+        if (!globalEmbeddingStore.isValidContent(file.path, content)) {
+            continue;
+        }
+        const cached = globalEmbeddingStore.getEmbedding(file.path);
+        if (!cached || file.stat.mtime > (cached as any).lastModified) {
+            changedFiles.push(file);
+        }
+    }
+
+    let totalChanges = changedFiles.length + deletedPaths.size;
+    if (totalChanges > 0) {
+        // Show progress for handling all changes
+        const progressNotice = new Notice('', 0);
+        const progressElement = progressNotice.noticeEl.createDiv();
+        let processedCount = 0;
+
+        try {
+            // Remove deleted files from both memory and persisted store
+            for (const deletedPath of deletedPaths) {
+                globalEmbeddingStore.removeNote(deletedPath);
+                processedCount++;
+                progressElement.setText(
+                    `Updating index: ${processedCount}/${totalChanges} (Removing deleted files)`
+                );
+            }
+
+            // Update modified files
+            for (const file of changedFiles) {
+                progressElement.setText(
+                    `Updating index: ${processedCount + 1}/${totalChanges} (Processing ${file.path})`
+                );
+                const content = await app.vault.cachedRead(file);
+                await globalEmbeddingStore.addNote(file, content);
+                processedCount++;
+            }
+
+            // Save updated embeddings after all changes are processed
+            await globalEmbeddingStore.saveToFile();
+
+            // Show summary of changes
+            const deletedCount = deletedPaths.size;
+            const modifiedCount = changedFiles.length;
+            let summaryMessage = [];
+            if (modifiedCount > 0) summaryMessage.push(`updated ${modifiedCount} files`);
+            if (deletedCount > 0) summaryMessage.push(`removed ${deletedCount} deleted files`);
+
+            new Notice(
+                `Index update complete: ${summaryMessage.join(', ')}`,
+                3000
+            );
+        } catch (error) {
+            new Notice('Error during index update: ' + error, 10000);
+            logError('Error during index update', error);
+            throw error;
+        } finally {
+            progressNotice.hide();
+        }
+    }
 }

@@ -1,7 +1,7 @@
 import { requestUrl, RequestUrlParam } from 'obsidian';
-import { Settings } from "src/settings";
-import { ChatMessage } from "src/chat";
-import { logError, logDebug } from "src/utils";
+import { Settings } from "../settings";
+import { ChatMessage } from "../chat";
+import { logError, logDebug } from "../utils";
 
 export class LLMConnector {
   private settings: Settings;
@@ -10,7 +10,7 @@ export class LLMConnector {
       this.settings = settings;
   }
 
-  async generateResponse(messages: ChatMessage[]): Promise<ChatMessage> {
+  async generateResponse(messages: ChatMessage[], signal?: AbortSignal): Promise<ChatMessage> {
       const provider = this.settings.chatSettings.provider;
       const apiEndpoint = provider === 'local'
           ? this.settings.chatSettings.localApiUrl
@@ -47,18 +47,20 @@ export class LLMConnector {
               stream: false
           };
 
-          const requestParams: RequestUrlParam = {
-              url: apiEndpoint,
+          // Use fetch instead of requestUrl to support abort signals
+          const response = await fetch(apiEndpoint, {
               method: 'POST',
               headers: headers,
-              body: JSON.stringify(requestBody)
-          };
+              body: JSON.stringify(requestBody),
+              signal
+          });
 
-          // Send request to API
-          const response = await requestUrl(requestParams);
+          if (!response.ok) {
+              throw new Error(`HTTP error! Status: ${response.status}`);
+          }
 
           // Parse response
-          const responseData = response.json;
+          const responseData = await response.json();
 
           if (responseData.choices && responseData.choices.length > 0) {
               const messageContent = responseData.choices[0].message.content;
@@ -67,6 +69,9 @@ export class LLMConnector {
               throw new Error('Invalid response format from API');
           }
       } catch (error) {
+          if (error.name === 'AbortError') {
+              throw error; // Re-throw abort errors to let caller handle them
+          }
           logError('Error in API request', error);
           throw error;
       }

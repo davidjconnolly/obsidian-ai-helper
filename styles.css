@@ -171,12 +171,26 @@ If your plugin does not need CSS, delete this file.
 }
 
 .theme-dark .ai-helper-chat-message-assistant {
-  background-color: var(--interactive-accent-hover);
-  color: white;
+  background-color: var(--background-secondary-alt);
+  color: var(--text-normal);
 }
 
 /* Markdown preview inside assistant messages */
-.ai-helper-chat-message-assistant .markdown-preview p {
+.ai-helper-chat-message-assistant .markdown-preview-view {
+  color: var(--text-normal);
+}
+
+.ai-helper-chat-message-assistant .markdown-preview-view a {
+  color: var(--link-color, var(--text-accent));
+  text-decoration: underline;
+}
+
+.ai-helper-chat-message-assistant .markdown-preview-view a:hover {
+  color: var(--link-color-hover, var(--text-accent-hover));
+  text-decoration: none;
+}
+
+.ai-helper-chat-message-assistant p {
   margin: 0;
   padding: 0;
 }

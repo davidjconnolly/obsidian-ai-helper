@@ -246,4 +246,9 @@ export default class AIHelperPlugin extends Plugin {
 		// Update debounce settings when settings are saved
 		this.fileUpdateManager.updateDebounceSettings();
 	}
+
+	// Public method to rescan vault files
+	public rescanVaultFiles(): void {
+		this.fileUpdateManager.rescanVaultFiles();
+	}
 }

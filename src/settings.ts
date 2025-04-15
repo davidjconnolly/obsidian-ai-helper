@@ -79,7 +79,7 @@ export const DEFAULT_SETTINGS: Settings = {
     updateMode: 'none'
   },
   openChatOnStartup: false,
-  debugMode: true,
+  debugMode: false,
   fileUpdateFrequency: 30, // Default to 30 seconds
   summarizeSettings: {
     provider: 'local',
@@ -381,6 +381,12 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.embeddingSettings.updateMode = value as 'onLoad' | 'onUpdate' | 'none';
           await this.plugin.saveSettings();
+        }))
+      .addButton(button => button
+        .setButtonText('Sync Now')
+        .setCta()
+        .onClick(() => {
+          this.plugin.rescanVaultFiles();
         }));
 
     new Setting(containerEl)

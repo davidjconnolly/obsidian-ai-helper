@@ -12,7 +12,7 @@ import { processQuery } from './nlp';
 export const AI_CHAT_VIEW_TYPE = 'ai-helper-chat-view';
 
 // Define welcome message
-const WELCOME_MESSAGE = "Hello! I'm your AI helper. I can help you explore your notes. Ask me anything about your notes!";
+const WELCOME_MESSAGE = "Hello! I'm your AI helper.  Ask me anything about your notes!";
 
 // Interface for a chat message
 export interface ChatMessage {
@@ -476,6 +476,9 @@ Be concise and helpful. ONLY use information from the provided context from the 
 If the context doesn't contain relevant information, acknowledge this honestly.
 When citing information, mention which note it came from.
 NEVER make up or hallucinate information that isn't in the provided context.
+IMPORTANT: Carefully evaluate each note for relevance to the user's query. If a note appears irrelevant
+to answering the specific query, do not use it in your response.
+If none of the notes are relevant, clearly state that you don't have relevant information.
 If you're not sure about something, say so clearly.`;
 
         // Prepare messages for the LLM

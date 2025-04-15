@@ -271,7 +271,18 @@ export class FileUpdateManager {
 				} else {
 					// Show completion notification
 					progressNotice.hide(); // Hide the progress notification
-					new Notice(`Completed indexing ${processedCount} files for AI search`, 3000);
+
+					// Save embeddings to disk
+					if (globalEmbeddingStore) {
+						globalEmbeddingStore.saveToFile().then(() => {
+							new Notice(`Completed indexing ${processedCount} files for AI search`, 3000);
+						}).catch(error => {
+							logError('Error saving embeddings to disk', error);
+							new Notice(`Error saving embeddings: ${error.message}`, 5000);
+						});
+					} else {
+						new Notice(`Completed indexing ${processedCount} files for AI search, but embeddings store is not initialized`, 3000);
+					}
 				}
 			});
 		};

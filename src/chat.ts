@@ -247,7 +247,7 @@ export class AIHelperChatView extends ItemView {
 
             // Add last updated time
             const lastUpdatedEl = metadataEl.createDiv({ cls: 'ai-helper-context-note-updated' });
-            const lastUpdated = new Date(note.file.stat.mtime);
+            const lastUpdated = note.file.stat?.mtime ? new Date(note.file.stat.mtime) : new Date();
             const timeAgo = this.getTimeAgoString(lastUpdated);
             lastUpdatedEl.setText(`Last updated: ${timeAgo}`);
 
@@ -321,11 +321,11 @@ export class AIHelperChatView extends ItemView {
         this.inputField.disabled = processing;
         if (processing) {
             this.sendButton.setButtonText('Processing...');
-            this.sendButton.buttonEl.disabled = true;
+            this.sendButton.setDisabled(true);
             this.inputField.placeholder = 'Please wait while I process your message...';
         } else {
             this.sendButton.setButtonText('Send');
-            this.sendButton.buttonEl.disabled = false;
+            this.sendButton.setDisabled(false);
             this.inputField.placeholder = 'Ask about your notes...';
         }
     }
@@ -518,7 +518,7 @@ If you're not sure about something, say so clearly.`;
 
         // Reset send button
         this.sendButton.setButtonText('Send');
-        this.sendButton.buttonEl.disabled = false;
+        this.sendButton.setDisabled(false);
 
         // Reset processing state
         this.setProcessingState(false);

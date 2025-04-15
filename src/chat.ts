@@ -3,7 +3,7 @@ import { Settings } from './settings';
 import { logDebug, logError } from './utils';
 import { VectorStore } from './chat/vectorStore';
 import { EmbeddingStore } from './chat/embeddingStore';
-import { ContextManager } from './chat/contextManager';
+import { ContextManager, AgenticContextManager } from './chat/contextManager';
 import { LLMConnector } from './chat/llmConnector';
 import { globalInitializationPromise, isGloballyInitialized, globalVectorStore, globalEmbeddingStore } from './chat/embeddingStore';
 import { processQuery } from './nlp';
@@ -74,6 +74,7 @@ export class AIHelperChatView extends ItemView {
     private embeddingStore: EmbeddingStore;
     private vectorStore: VectorStore;
     private contextManager: ContextManager;
+    private agenticContextManager: AgenticContextManager;
     private llmConnector: LLMConnector;
     private isProcessing = false;
     private initializationPromise: Promise<void> | null = null;
@@ -88,6 +89,7 @@ export class AIHelperChatView extends ItemView {
         this.vectorStore = null!;
         this.embeddingStore = null!;
         this.contextManager = null!;
+        this.agenticContextManager = null!;
         this.llmConnector = new LLMConnector(settings);
 
         // Set up the initialization promise
@@ -117,6 +119,13 @@ export class AIHelperChatView extends ItemView {
                     this.vectorStore = globalVectorStore;
                     this.embeddingStore = globalEmbeddingStore;
                     this.contextManager = new ContextManager(this.vectorStore, this.settings);
+                    this.agenticContextManager = new AgenticContextManager(
+                        this.vectorStore,
+                        this.embeddingStore,
+                        this.settings,
+                        this.llmConnector,
+                        this.app
+                    );
                 } else {
                     throw new Error('Embedding system not properly initialized');
                 }
@@ -355,7 +364,7 @@ export class AIHelperChatView extends ItemView {
             }
 
             // Ensure we have valid instances before proceeding
-            if (!this.vectorStore || !this.embeddingStore || !this.contextManager) {
+            if (!this.vectorStore || !this.embeddingStore || !this.contextManager || !this.agenticContextManager) {
                 throw new Error('Embedding system not properly initialized');
             }
 
@@ -470,6 +479,9 @@ export class AIHelperChatView extends ItemView {
             return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
         }
 
+        // Use the original notes for context processing
+        let notesToUse = this.relevantNotes;
+
         // Create system message with strong anti-hallucination directive
         const responseSystemPrompt = `You are an AI assistant helping a user with their notes.
 Be concise and helpful. ONLY use information from the provided context from the user's notes.
@@ -487,9 +499,37 @@ If you're not sure about something, say so clearly.`;
             { role: 'user', content: userQuery }
         ];
 
-        // Create context from relevant notes
-        //ToDo - There's probably a better way to do this, I'm just eyeballing 200 as a buffer to keep it under the limit, but it's not exact
-        const context = this.contextManager.buildContext(userQuery, this.relevantNotes, JSON.stringify(messages).length + JSON.stringify(responseSystemPrompt).length + 200);
+        // Calculate space needed for messages and system prompt
+        const contextLength = JSON.stringify(messages).length + JSON.stringify(responseSystemPrompt).length + 200;
+
+        let context: string;
+
+        // Use agentic or standard context building based on settings
+        if (this.settings.chatSettings.useAgenticContextRefinement) {
+            logDebug(this.settings, `Using agentic context manager for query: "${userQuery}"`);
+
+            // First evaluate which notes are truly relevant
+            const evaluatedNotes = await this.agenticContextManager.evaluateNotesRelevance(userQuery, notesToUse, signal);
+
+            // Update relevant notes to only show those deemed relevant by the agentic manager
+            this.relevantNotes = evaluatedNotes;
+            this.displayContextNotes();
+
+            // Build context with the truly relevant notes
+            context = await this.agenticContextManager.buildAgenticContext(
+                userQuery,
+                notesToUse, // Still pass all notes to allow the manager to do its full pipeline
+                contextLength,
+                signal
+            );
+        } else {
+            logDebug(this.settings, `Using standard context manager for query: "${userQuery}"`);
+            context = this.contextManager.buildContext(
+                userQuery,
+                notesToUse,
+                contextLength
+            );
+        }
 
         messages.unshift({ role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` });
 

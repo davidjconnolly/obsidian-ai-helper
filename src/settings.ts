@@ -28,6 +28,7 @@ export interface ChatSettings {
   similarity: number;
   maxContextLength: number;
   titleMatchBoost: number;
+  useAgenticContextRefinement: boolean;
 }
 
 export interface SummarizeSettings {
@@ -65,6 +66,7 @@ export const DEFAULT_SETTINGS: Settings = {
     similarity: 0.5,
     maxContextLength: 4000,
     titleMatchBoost: 0.5,
+    useAgenticContextRefinement: true,
   },
   embeddingSettings: {
     provider: 'local',
@@ -259,6 +261,16 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.chatSettings.displayWelcomeMessage)
         .onChange(async (value) => {
           this.plugin.settings.chatSettings.displayWelcomeMessage = value;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Use agentic context refinement')
+      .setDesc('Enable AI to intelligently search for more information when needed. This helps provide more complete answers by letting the AI perform follow-up searches automatically. (Recommended for best results)')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.chatSettings.useAgenticContextRefinement)
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.useAgenticContextRefinement = value;
           await this.plugin.saveSettings();
         }));
 

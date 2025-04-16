@@ -322,6 +322,58 @@ export class AIHelperChatView extends ItemView {
         this.inputField.focus();
     }
 
+    // Add a method to create an empty assistant message element for streaming updates
+    createStreamingAssistantMessage(): { messageEl: HTMLElement, contentDiv: HTMLElement, updateContent: (content: string) => void } {
+        const messageEl = this.messagesContainer.createDiv({ cls: 'ai-helper-chat-message ai-helper-chat-message-assistant' });
+        const contentDiv = messageEl.createDiv();
+
+        // Add loading indicator
+        const loadingIndicator = contentDiv.createDiv({ cls: 'ai-helper-streaming-loading' });
+        loadingIndicator.innerHTML = '<span class="ai-helper-streaming-dot"></span><span class="ai-helper-streaming-dot"></span><span class="ai-helper-streaming-dot"></span>';
+
+        // Track if content has been received
+        let hasReceivedContent = false;
+        let currentContent = '';
+
+        // Create a function to update the content
+        const updateContent = (content: string) => {
+            try {
+                // If this is the first update, clear the loading indicator
+                if (!hasReceivedContent) {
+                    contentDiv.empty();
+                    hasReceivedContent = true;
+                }
+
+                // Update current content
+                currentContent = content;
+
+                // Create fresh div for rendering
+                contentDiv.empty();
+
+                try {
+                    // Try to render as markdown
+                    MarkdownRenderer.renderMarkdown(content, contentDiv, '', this);
+                } catch (e) {
+                    console.error("Failed to render markdown:", e);
+                    // Use text as fallback
+                    contentDiv.setText(content);
+                }
+
+                // Auto-scroll to the latest content
+                this.messagesContainer.scrollTo({
+                    top: this.messagesContainer.scrollHeight,
+                    behavior: 'smooth'
+                });
+            } catch (e) {
+                console.error("Error updating streaming content:", e);
+                // Ultimate fallback
+                contentDiv.setText(content);
+            }
+        };
+
+        return { messageEl, contentDiv, updateContent };
+    }
+
     private setProcessingState(processing: boolean) {
         this.isProcessing = processing;
         this.inputField.disabled = processing;
@@ -340,7 +392,7 @@ export class AIHelperChatView extends ItemView {
         const message = this.inputField.value.trim();
         if (!message || this.isProcessing) return;
 
-        // Create new AbortController for this operation
+        // Create abort controller
         this.abortController = new AbortController();
         const signal = this.abortController.signal;
 
@@ -348,39 +400,110 @@ export class AIHelperChatView extends ItemView {
         this.setProcessingState(true);
 
         try {
-            // Clear input field
+            // Clear input and add user message
             this.inputField.value = '';
-
-            // Add user message to chat
             this.addUserMessage(message);
 
-            // Wait for initialization to complete
+            // Wait for initialization
             if (this.initializationPromise) {
                 await this.initializationPromise;
-                this.initializationPromise = null; // Clear the promise after first use
+                this.initializationPromise = null;
             }
 
-            // Ensure we have valid instances before proceeding
+            // Check requirements
             if (!this.vectorStore || !this.embeddingStore || !this.contextManager) {
                 throw new Error('Embedding system not properly initialized');
             }
 
-            // Find relevant notes based on the query
+            // Find relevant notes
             this.relevantNotes = await this.findRelevantNotes(message);
             this.displayContextNotes();
 
-            // Generate response using the found notes
-            const response = await this.generateResponse(message, signal);
+            // Prepare messages
+            const modelMessages = await this.prepareModelMessages(message);
 
-            // Add assistant response to chat
-            this.addAssistantMessage(response.content);
+            // Store final content
+            let finalContent = '';
+
+            if (this.settings.chatSettings.enableStreaming) {
+                // Create UI element and get the update function
+                const { updateContent } = this.createStreamingAssistantMessage();
+
+                try {
+                    // Stream response and update UI with each chunk
+                    const response = await this.llmConnector.streamResponse(
+                        modelMessages,
+                        (content) => {
+                            // Update UI with the latest content
+                            updateContent(content);
+                            // Save latest content
+                            finalContent = content;
+                        },
+                        signal
+                    );
+
+                    // Add to message history
+                    this.messages.push({
+                        role: 'assistant',
+                        content: finalContent || response.content
+                    });
+                } catch (error) {
+                    console.error('Error during streaming:', error);
+                    if (error.name !== 'AbortError') {
+                        // If we already have content, keep it
+                        if (finalContent) {
+                            this.messages.push({
+                                role: 'assistant',
+                                content: finalContent
+                            });
+                        } else {
+                            // Show error message
+                            this.addAssistantMessage('I apologize, but there was an error processing your request.');
+                        }
+                    }
+                }
+            } else {
+                // Non-streaming approach
+                // Create a temporary "thinking" message
+                const { messageEl, updateContent } = this.createStreamingAssistantMessage();
+
+                try {
+                    // Generate response (this will take some time)
+                    const response = await this.llmConnector.generateResponse(modelMessages, signal);
+
+                    // Update the temporary message with the actual response
+                    updateContent(response.content);
+
+                    // Add to message history
+                    this.messages.push({
+                        role: 'assistant',
+                        content: response.content
+                    });
+                } catch (error) {
+                    console.error('Message processing error:', error);
+                    if (error.name !== 'AbortError') {
+                        // Update the temporary message with an error message
+                        updateContent('I apologize, but I was unable to process your request.');
+
+                        // Add to message history
+                        this.messages.push({
+                            role: 'assistant',
+                            content: 'I apologize, but I was unable to process your request.'
+                        });
+                    } else {
+                        // If aborted, remove the temporary message
+                        messageEl.remove();
+                    }
+                }
+            }
         } catch (error) {
+            // Handle errors
+            console.error('Message processing error:', error);
             if (error.name !== 'AbortError') {
-                logError('Error processing message', error);
-                this.addAssistantMessage('I apologize, but I was unable to process your request. Please try again later.');
+                this.addAssistantMessage('I apologize, but I was unable to process your request.');
             }
         } finally {
-            // Reset processing state
+            // Reset state
             this.setProcessingState(false);
             this.abortController = null;
         }
@@ -470,10 +593,16 @@ export class AIHelperChatView extends ItemView {
         }
     }
 
-    async generateResponse(userQuery: string, signal?: AbortSignal): Promise<ChatMessage> {
-        // If no relevant notes were found, return a clear message
+    async prepareModelMessages(userQuery: string): Promise<ChatMessage[]> {
+        // If no relevant notes were found, return a simple fallback message
         if (this.relevantNotes.length === 0) {
-            return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
+            return [
+                {
+                    role: 'system',
+                    content: 'You are an AI assistant helping a user with their notes. Try to be helpful even when no relevant context is available.'
+                },
+                { role: 'user', content: userQuery }
+            ];
         }
 
         // Create system message with strong anti-hallucination directive
@@ -487,17 +616,51 @@ to answering the specific query, do not use it in your response.
 If none of the notes are relevant, clearly state that you don't have relevant information.
 If you're not sure about something, say so clearly.`;
 
+        // Get previous conversation history excluding the last user message
+        // which we'll add directly as a separate message
+        const conversationHistory = this.messages.length > 1
+            ? this.messages.slice(0, -1)
+            : [];
+
+        // Create conversation history string, if any
+        const historyText = conversationHistory.length > 0
+            ? `\nConversation history:\n${conversationHistory.map(m => `${m.role}: ${m.content}`).join('\n')}`
+            : '';
+
         // Prepare messages for the LLM
         const messages: ChatMessage[] = [
-            { role: 'system', content: `Here is the conversation history:\n${this.messages.slice(0, -1).map(m => `${m.role}: ${m.content}`).join('\n')}` },
+            {
+                role: 'system',
+                content: `${responseSystemPrompt}${historyText}`
+            },
             { role: 'user', content: userQuery }
         ];
 
         // Create context from relevant notes
-        //ToDo - There's probably a better way to do this, I'm just eyeballing 200 as a buffer to keep it under the limit, but it's not exact
-        const context = this.contextManager.buildContext(userQuery, this.relevantNotes, JSON.stringify(messages).length + JSON.stringify(responseSystemPrompt).length + 200);
+        const context = this.contextManager.buildContext(
+            userQuery,
+            this.relevantNotes,
+            // We already have system context and query, adjust token budget accordingly
+            JSON.stringify(messages).length + 200
+        );
 
-        messages.unshift({ role: 'system', content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}` });
+        // Replace the system message with one containing the context
+        messages[0] = {
+            role: 'system',
+            content: `${responseSystemPrompt}\n\nContext from user's notes:\n${context}${historyText}`
+        };
+
+        return messages;
+    }
+
+    async generateResponse(userQuery: string, signal?: AbortSignal): Promise<ChatMessage> {
+        // Prepare model messages
+        const messages = await this.prepareModelMessages(userQuery);
+
+        // If there are no relevant notes, return a standard message
+        if (this.relevantNotes.length === 0) {
+            return { role: 'assistant', content: "I apologize, but I couldn't find any relevant notes in your vault that would help me answer your question. Could you please provide more context or rephrase your question?" };
+        }
 
         // Send to LLM for processing
         const response = await this.llmConnector.generateResponse(messages, signal);

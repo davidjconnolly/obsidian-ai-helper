@@ -28,6 +28,7 @@ export interface ChatSettings {
   similarity: number;
   maxContextLength: number;
   titleMatchBoost: number;
+  enableStreaming: boolean;
 }
 
 export interface SummarizeSettings {
@@ -65,6 +66,7 @@ export const DEFAULT_SETTINGS: Settings = {
     similarity: 0.5,
     maxContextLength: 4000,
     titleMatchBoost: 0.5,
+    enableStreaming: true,
   },
   embeddingSettings: {
     provider: 'local',
@@ -250,6 +252,16 @@ export class AIHelperSettingTab extends PluginSettingTab {
             this.plugin.settings.chatSettings.titleMatchBoost = parsed || DEFAULT_SETTINGS.chatSettings.titleMatchBoost;
             await this.plugin.saveSettings();
           }
+        }));
+
+    new Setting(containerEl)
+      .setName('Enable streaming')
+      .setDesc('Stream the response from the AI as it\'s being generated')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.chatSettings.enableStreaming)
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.enableStreaming = value;
+          await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)

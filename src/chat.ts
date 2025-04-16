@@ -70,7 +70,7 @@ export class AIHelperChatView extends ItemView {
     relevantNotes: NoteWithContent[] = [];
     app: App;
 
-    // Vector search components
+    private contextHeader: HTMLElement;
     private embeddingStore: EmbeddingStore;
     private vectorStore: VectorStore;
     private contextManager: ContextManager;
@@ -162,8 +162,8 @@ export class AIHelperChatView extends ItemView {
 
         // Create context section for relevant notes
         const contextSection = mainContent.createDiv({ cls: 'ai-helper-context-section' });
-        const contextHeader = contextSection.createDiv({ cls: 'ai-helper-context-header' });
-        contextHeader.setText('Relevant notes');
+        this.contextHeader = contextSection.createDiv({ cls: 'ai-helper-context-header' });
+        this.contextHeader.setText('Relevant notes');
         this.contextContainer = contextSection.createDiv({ cls: 'ai-helper-context-notes' });
 
         // Create messages container
@@ -206,7 +206,10 @@ export class AIHelperChatView extends ItemView {
     displayContextNotes() {
         this.contextContainer.empty();
 
+        // Update header with note count
         if (this.relevantNotes.length === 0) {
+            this.contextHeader.setText('Relevant notes');
+
             const emptyState = this.contextContainer.createDiv({ cls: 'ai-helper-context-empty' });
 
             // Add search icon
@@ -223,6 +226,9 @@ export class AIHelperChatView extends ItemView {
 
             return;
         }
+
+        // Update header with note count
+        this.contextHeader.setText(`Relevant notes (${this.relevantNotes.length})`);
 
         // Sort notes by relevance
         const sortedNotes = [...this.relevantNotes].sort((a, b) => b.relevance - a.relevance);

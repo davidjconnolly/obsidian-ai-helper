@@ -29,6 +29,8 @@ export interface ChatSettings {
   maxContextLength: number;
   titleMatchBoost: number;
   enableStreaming: boolean;
+  maxRecencyBoost: number;
+  recencyBoostWindow: number;
 }
 
 export interface SummarizeSettings {
@@ -54,19 +56,21 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   chatSettings: {
     provider: 'local',
-    openaiModel: 'gpt-3.5-turbo',
+    openaiModel: 'gpt-4.1-nano',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
     openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
-    localModel: 'qwen2-7b-instruct',
-    maxTokens: 500,
+    localModel: 'gemma-3-12b-it',
+    maxTokens: 1000,
     temperature: 0.7,
     maxNotesToSearch: 20,
     displayWelcomeMessage: true,
     similarity: 0.5,
-    maxContextLength: 4000,
-    titleMatchBoost: 0.5,
+    maxContextLength: 10000,
+    titleMatchBoost: 0.3,
     enableStreaming: true,
+    maxRecencyBoost: 0.3,
+    recencyBoostWindow: 185,
   },
   embeddingSettings: {
     provider: 'local',
@@ -82,15 +86,15 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   openChatOnStartup: false,
   debugMode: false,
-  fileUpdateFrequency: 30, // Default to 30 seconds
+  fileUpdateFrequency: 60,
   summarizeSettings: {
     provider: 'local',
-    openaiModel: 'gpt-3.5-turbo',
+    openaiModel: 'gpt-4.1-nano',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
     openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
-    localModel: 'qwen2-7b-instruct',
-    maxTokens: 500,
+    localModel: 'gemma-3-12b-it',
+    maxTokens: 1000,
     temperature: 0.7
   },
 };
@@ -250,6 +254,34 @@ export class AIHelperSettingTab extends PluginSettingTab {
           const parsed = parseFloat(value);
           if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
             this.plugin.settings.chatSettings.titleMatchBoost = parsed || DEFAULT_SETTINGS.chatSettings.titleMatchBoost;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName('Max recency boost')
+      .setDesc('Maximum boost for recently modified files (0.0 to 1.0)')
+      .addText(text => text
+        .setPlaceholder('Enter max recency boost')
+        .setValue(this.plugin.settings.chatSettings.maxRecencyBoost.toString())
+        .onChange(async (value) => {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+            this.plugin.settings.chatSettings.maxRecencyBoost = parsed || DEFAULT_SETTINGS.chatSettings.maxRecencyBoost;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName('Recency boost window')
+      .setDesc('Days window for recency boost decay (higher values give older files more weight)')
+      .addText(text => text
+        .setPlaceholder('Enter recency boost window in days')
+        .setValue(this.plugin.settings.chatSettings.recencyBoostWindow.toString())
+        .onChange(async (value) => {
+          const parsed = parseInt(value);
+          if (!isNaN(parsed) && parsed > 0) {
+            this.plugin.settings.chatSettings.recencyBoostWindow = parsed || DEFAULT_SETTINGS.chatSettings.recencyBoostWindow;
             await this.plugin.saveSettings();
           }
         }));

@@ -46,14 +46,12 @@ export class VectorStore {
   // Helper method to calculate recency score
   private calculateRecencyScore(mtime: number): number {
     const now = Date.now();
-    const daysSinceModified = (now - mtime) / (1000 * 60 * 60 * 24);
+    const daysSinceCreated = (now - mtime) / (1000 * 60 * 60 * 24);
 
-    // Exponential decay function that gives:
-    // - 0.1 (max recency boost) for files modified today
-    // - 0.05 for files modified a week ago
-    // - 0.025 for files modified a month ago
-    // - Approaching 0 for older files
-    return 0.1 * Math.exp(-daysSinceModified / 30);
+    // Exponential decay function using configurable settings
+    // - maxRecencyBoost for files modified today
+    // - Decays based on the recencyBoostWindow (higher values give older files more weight)
+    return this.settings.chatSettings.maxRecencyBoost * Math.exp(-daysSinceCreated / this.settings.chatSettings.recencyBoostWindow);
   }
 
   /**
@@ -147,7 +145,7 @@ export class VectorStore {
       // Calculate recency score if we have access to the file
       const file = this.app?.vault.getAbstractFileByPath(path);
       const recencyScore =
-        file instanceof TFile ? this.calculateRecencyScore(file.stat.mtime) : 0;
+        file instanceof TFile ? this.calculateRecencyScore(file.stat.ctime) : 0;
 
       // Add a slight boost if this is the active file
       const isActiveFile = options.file && options.file.path === path;

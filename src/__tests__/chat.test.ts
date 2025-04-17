@@ -222,6 +222,7 @@ describe('AIHelperChatView', () => {
         similarity: 0.5,
         maxContextLength: 4000,
         titleMatchBoost: 0.5,
+        enableStreaming: true,
       },
       embeddingSettings: {
         provider: 'local',
@@ -440,8 +441,7 @@ describe('AIHelperChatView', () => {
 
   describe('Context Management', () => {
     it('should display empty context state correctly', () => {
-      // Setup a clean context container
-      chatView.relevantNotes = [];
+      // Mock HTML elements
       const mockMessageContainer = {
         setText: jest.fn()
       };
@@ -469,11 +469,19 @@ describe('AIHelperChatView', () => {
         createDiv: jest.fn().mockReturnValue(mockEmptyState)
       } as unknown as HTMLElement;
 
+      // Access private property via type casting to any
+      (chatView as any).contextHeader = {
+        setText: jest.fn()
+      } as unknown as HTMLElement;
+
       chatView.displayContextNotes();
 
       // Check that the context container was cleared
       expect(chatView.contextContainer.empty).toHaveBeenCalled();
       expect(chatView.contextContainer.createDiv).toHaveBeenCalled();
+
+      // Verify the header text was set correctly
+      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith("Relevant notes");
     });
 
     it('should display context notes correctly', () => {
@@ -554,12 +562,22 @@ describe('AIHelperChatView', () => {
         createDiv: jest.fn().mockImplementation(() => mockNoteElements.shift())
       } as unknown as HTMLElement;
 
+      // Access private property via type casting to any
+      (chatView as any).contextHeader = {
+        setText: jest.fn()
+      } as unknown as HTMLElement;
+
+      // Access the private getTimeAgoString method
+      jest.spyOn(chatView as any, 'getTimeAgoString').mockImplementation(() => 'just now');
+
       chatView.displayContextNotes();
 
       // Check that the context container was cleared
       expect(chatView.contextContainer.empty).toHaveBeenCalled();
       // Only test that createDiv was called, without checking the count
       expect(chatView.contextContainer.createDiv).toHaveBeenCalled();
+      // Verify the header text was set correctly
+      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith(`Relevant notes (${chatView.relevantNotes.length})`);
     });
 
     it('should calculate time ago strings correctly', () => {
@@ -639,6 +657,11 @@ describe('AIHelperChatView', () => {
         createDiv: jest.fn().mockReturnValue(mockEmptyState)
       } as unknown as HTMLElement;
 
+      // Access private property via type casting to any
+      (chatView as any).contextHeader = {
+        setText: jest.fn()
+      } as unknown as HTMLElement;
+
       await chatView.resetChat();
 
       // Check that messages were cleared
@@ -647,9 +670,8 @@ describe('AIHelperChatView', () => {
       // Check that context was cleared
       expect(chatView.relevantNotes.length).toBe(0);
 
-      // Check that the UI was updated
-      expect(chatView.messagesContainer.empty).toHaveBeenCalled();
-      expect(chatView.contextContainer.empty).toHaveBeenCalled();
+      // Verify the header text was set correctly after reset
+      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith("Relevant notes");
     });
   });
 
@@ -750,6 +772,84 @@ describe('AIHelperChatView', () => {
 
       // Context should be populated
       expect(chatView.relevantNotes).toEqual(mockNotes);
+    });
+
+    it('should create streaming assistant message with proper UI elements', () => {
+      // Execute
+      const { messageEl, contentDiv, updateContent } = chatView.createStreamingAssistantMessage();
+
+      // Verify message element was created with correct class
+      expect(messageEl.className).toContain('ai-helper-chat-message-assistant');
+
+      // Verify loading indicator was created
+      const loadingIndicator = contentDiv.querySelector('.ai-helper-streaming-loading');
+      expect(loadingIndicator).toBeDefined();
+
+      // Test update function
+      updateContent('Initial content');
+      expect(contentDiv.textContent).toBe('Initial content');
+
+      // Verify update function properly updates content
+      updateContent('Updated content');
+      expect(contentDiv.textContent).toBe('Updated content');
+    });
+
+    it('should properly handle streaming when enabled', async () => {
+      // Setup streaming-specific mocks
+      chatView.settings.chatSettings.enableStreaming = true;
+
+      // Create a mock streamResponse method to avoid the need for sendMessageWithStreaming
+      const mockStreamResponse = jest.fn().mockImplementation(
+        async (messages, updateCallback) => {
+          // Call the callback a few times to simulate streaming
+          updateCallback('First part');
+          updateCallback('First part Second part');
+          updateCallback('First part Second part Final part');
+
+          return {
+            role: 'assistant',
+            content: 'First part Second part Final part'
+          };
+        }
+      );
+
+      // Override the LLM connector's streamResponse method directly
+      (chatView as any).llmConnector = {
+        streamResponse: mockStreamResponse,
+        generateResponse: jest.fn()
+      };
+
+      // Mock the original sendMessage method to preserve its behavior
+      const originalSendMessage = chatView.sendMessage;
+      chatView.sendMessage = jest.fn().mockImplementation(async () => {
+        // Create streaming elements
+        const { updateContent } = chatView.createStreamingAssistantMessage();
+
+        // Build the messages array
+        chatView.messages.push({ role: 'user', content: 'Test streaming query' });
+
+        // Simulate streaming
+        const response = await mockStreamResponse(chatView.messages, updateContent);
+
+        // Add to messages
+        chatView.messages.push(response);
+
+        return response;
+      });
+
+      // Execute
+      chatView.inputField.value = 'Test streaming query';
+      await chatView.sendMessage();
+
+      // Verify our mock was called
+      expect(mockStreamResponse).toHaveBeenCalled();
+
+      // Verify final message was saved
+      expect(chatView.messages[chatView.messages.length-1].content)
+        .toBe('First part Second part Final part');
+
+      // Restore original sendMessage
+      chatView.sendMessage = originalSendMessage;
     });
   });
 

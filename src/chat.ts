@@ -39,6 +39,7 @@ export interface NoteWithContent {
   content: string;
   relevance: number;
   chunkIndex?: number;
+  includedInContext?: boolean;
 }
 
 // Interface for note chunks with embeddings
@@ -240,9 +241,12 @@ export class AIHelperChatView extends ItemView {
   displayContextNotes() {
     this.contextContainer.empty();
 
+    // Filter for only notes that were included in context
+    const includedNotes = this.relevantNotes.filter(note => note.includedInContext === true);
+
     // Update header with note count
-    if (this.relevantNotes.length === 0) {
-      this.contextHeader.setText("Relevant notes");
+    if (includedNotes.length === 0) {
+      this.contextHeader.setText("Notes in context");
 
       const emptyState = this.contextContainer.createDiv({
         cls: "ai-helper-context-empty",
@@ -265,17 +269,17 @@ export class AIHelperChatView extends ItemView {
         cls: "ai-helper-context-empty-suggestion",
       });
       suggestionContainer.setText(
-        "Relevant notes will appear here as context for our conversation",
+        "Notes used as context for the answer will appear here"
       );
 
       return;
     }
 
     // Update header with note count
-    this.contextHeader.setText(`Relevant notes (${this.relevantNotes.length})`);
+    this.contextHeader.setText(`Notes in context (${includedNotes.length})`);
 
     // Sort notes by relevance
-    const sortedNotes = [...this.relevantNotes].sort(
+    const sortedNotes = [...includedNotes].sort(
       (a, b) => b.relevance - a.relevance,
     );
 
@@ -498,10 +502,20 @@ export class AIHelperChatView extends ItemView {
 
       // Find relevant notes
       this.relevantNotes = await this.findRelevantNotes(message);
+
+      // Prepare messages
+      const modelMessages = await this.contextManager.prepareModelMessages(
+        message,
+        this.relevantNotes,
+        this.messages,
+        WELCOME_MESSAGE,
+      );
+
+      // After context is built, update the relevant notes list to show only included notes
       this.displayContextNotes();
 
       // If no relevant notes were found, provide standard response
-      if (this.relevantNotes.length === 0) {
+      if (this.relevantNotes.filter(note => note.includedInContext).length === 0) {
         // Create UI element for displaying the response
         const { messageEl, updateContent } =
           this.createStreamingAssistantMessage();
@@ -512,9 +526,6 @@ export class AIHelperChatView extends ItemView {
         this.messages.push({ role: "assistant", content: noNotesResponse });
         return;
       }
-
-      // Prepare messages
-      const modelMessages = await this.prepareModelMessages(message);
 
       // Store final content
       let finalContent = "";
@@ -696,6 +707,7 @@ export class AIHelperChatView extends ItemView {
             content,
             relevance: result.score,
             chunkIndex: result.chunkIndex,
+            includedInContext: false, // Default to false - will be updated by context manager
           });
         } catch (error) {
           console.error(`Error reading file ${file.path}:`, error);
@@ -711,16 +723,6 @@ export class AIHelperChatView extends ItemView {
       console.error("Error finding relevant notes:", error);
       return [];
     }
-  }
-
-  async prepareModelMessages(userQuery: string): Promise<ChatMessage[]> {
-    // Use the ContextManager to prepare model messages
-    return this.contextManager.prepareModelMessages(
-      userQuery,
-      this.relevantNotes,
-      this.messages,
-      WELCOME_MESSAGE,
-    );
   }
 
   // Add a method to reset the chat

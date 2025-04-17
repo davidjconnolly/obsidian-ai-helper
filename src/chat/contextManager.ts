@@ -24,6 +24,11 @@ export class ContextManager {
 
     // Add relevant notes
     if (notes.length > 0) {
+      // Reset includedInContext flag for all notes
+      notes.forEach(note => {
+        note.includedInContext = false;
+      });
+
       // Sort notes by relevance
       const sortedNotes = [...notes].sort((a, b) => b.relevance - a.relevance);
 
@@ -36,9 +41,13 @@ export class ContextManager {
         // Check if adding this note would exceed the limit
         if (JSON.stringify(newContext).length > maxContextLength) {
           context = newContext.substring(0, maxContextLength);
+          // Mark this note as included
+          note.includedInContext = true;
           break;
         } else {
           context = newContext;
+          // Mark this note as included
+          note.includedInContext = true;
         }
       }
     } else {

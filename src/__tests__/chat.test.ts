@@ -142,7 +142,13 @@ jest.mock('../chat/contextManager', () => {
   return {
     ContextManager: jest.fn().mockImplementation(() => ({
       buildContext: jest.fn().mockReturnValue('This is a context from relevant notes'),
-      extractRelevantExcerpt: jest.fn().mockReturnValue('This is a relevant excerpt')
+      extractRelevantExcerpt: jest.fn().mockReturnValue('This is a relevant excerpt'),
+      prepareModelMessages: jest.fn().mockImplementation((userQuery, notes, messages, welcomeMessage) => {
+        return [
+          { role: 'system', content: 'You are an AI assistant helping with notes.' },
+          { role: 'user', content: userQuery }
+        ];
+      })
     }))
   };
 });
@@ -223,6 +229,8 @@ describe('AIHelperChatView', () => {
         maxContextLength: 4000,
         titleMatchBoost: 0.5,
         enableStreaming: true,
+        maxRecencyBoost: 0.5,
+        recencyBoostWindow: 7
       },
       embeddingSettings: {
         provider: 'local',
@@ -481,7 +489,7 @@ describe('AIHelperChatView', () => {
       expect(chatView.contextContainer.createDiv).toHaveBeenCalled();
 
       // Verify the header text was set correctly
-      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith("Relevant notes");
+      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith("Notes in context");
     });
 
     it('should display context notes correctly', () => {
@@ -497,7 +505,8 @@ describe('AIHelperChatView', () => {
           } as TFile,
           content: 'Test content 1',
           relevance: 0.9,
-          chunkIndex: 0
+          chunkIndex: 0,
+          includedInContext: true
         },
         {
           file: {
@@ -509,7 +518,8 @@ describe('AIHelperChatView', () => {
           } as TFile,
           content: 'Test content 2',
           relevance: 0.8,
-          chunkIndex: 0
+          chunkIndex: 0,
+          includedInContext: true
         }
       ];
 
@@ -577,7 +587,7 @@ describe('AIHelperChatView', () => {
       // Only test that createDiv was called, without checking the count
       expect(chatView.contextContainer.createDiv).toHaveBeenCalled();
       // Verify the header text was set correctly
-      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith(`Relevant notes (${chatView.relevantNotes.length})`);
+      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith(`Notes in context (${chatView.relevantNotes.length})`);
     });
 
     it('should calculate time ago strings correctly', () => {
@@ -671,7 +681,7 @@ describe('AIHelperChatView', () => {
       expect(chatView.relevantNotes.length).toBe(0);
 
       // Verify the header text was set correctly after reset
-      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith("Relevant notes");
+      expect((chatView as any).contextHeader.setText).toHaveBeenCalledWith("Notes in context");
     });
   });
 

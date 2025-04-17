@@ -532,7 +532,7 @@ describe('AIHelperChatView', () => {
       // Create mock elements with setText
       const mockTitleEl = { setText: jest.fn() };
       const mockPathEl = { setText: jest.fn() };
-      const mockLastUpdatedEl = { setText: jest.fn() };
+      const mockCreatedEl = { setText: jest.fn() };
       const mockSimilarityEl = { setText: jest.fn() };
       const mockContentEl = { setText: jest.fn() };
 
@@ -541,8 +541,8 @@ describe('AIHelperChatView', () => {
         createDiv: jest.fn().mockImplementation((options) => {
           if (options?.cls?.includes('ai-helper-context-note-path')) {
             return mockPathEl;
-          } else if (options?.cls?.includes('ai-helper-context-note-updated')) {
-            return mockLastUpdatedEl;
+          } else if (options?.cls?.includes('ai-helper-context-note-created')) {
+            return mockCreatedEl;
           } else if (options?.cls?.includes('ai-helper-context-note-similarity')) {
             return mockSimilarityEl;
           }

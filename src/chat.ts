@@ -311,15 +311,15 @@ export class AIHelperChatView extends ItemView {
       });
       similarityEl.setText(`Relevance: ${(note.relevance * 100).toFixed(1)}%`);
 
-      // Add last updated time
-      const lastUpdatedEl = metadataEl.createDiv({
-        cls: "ai-helper-context-note-updated",
+      // Add creation time
+      const createdEl = metadataEl.createDiv({
+        cls: "ai-helper-context-note-created",
       });
-      const lastUpdated = note.file.stat?.mtime
-        ? new Date(note.file.stat.mtime)
+      const created = note.file.stat?.ctime
+        ? new Date(note.file.stat.ctime)
         : new Date();
-      const timeAgo = this.getTimeAgoString(lastUpdated);
-      lastUpdatedEl.setText(`Last updated: ${timeAgo}`);
+      const timeAgo = this.getTimeAgoString(created);
+      createdEl.setText(`Created: ${timeAgo}`);
 
       // Add note content preview
       const contentEl = noteElement.createDiv({

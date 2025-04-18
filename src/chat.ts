@@ -530,6 +530,8 @@ export class AIHelperChatView extends ItemView {
       // Store final content
       let finalContent = "";
 
+      logDebug(this.settings, "Sending message to LLM: " + JSON.stringify(modelMessages));
+
       if (this.settings.chatSettings.enableStreaming) {
         // Create UI element and get the update function
         const { updateContent } = this.createStreamingAssistantMessage();

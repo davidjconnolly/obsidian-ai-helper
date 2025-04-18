@@ -515,13 +515,13 @@ export class EmbeddingStore {
       if (!exists) {
         logDebug(
           this.settings,
-          "No existing embeddings file found. Starting with empty index.",
+          "No existing embeddings file found. Starting with empty index."
         );
         return;
       }
 
       const data = JSON.parse(
-        await this.app.vault.adapter.read(filePath),
+        await this.app.vault.adapter.read(filePath)
       ) as PersistedEmbeddingStore;
 
       // Clear existing embeddings
@@ -532,13 +532,16 @@ export class EmbeddingStore {
       for (const [path, embedding] of Object.entries(data.embeddings)) {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (file instanceof TFile) {
-          // Check if file has been modified since last save
-          if (file.stat.mtime > embedding.lastModified) {
-            // File changed, needs reindexing
+          // Check if file has been modified since last save and if we should update it
+          const shouldReindex = file.stat.mtime > embedding.lastModified &&
+                                this.settings.embeddingSettings.updateMode !== 'none';
+
+          if (shouldReindex) {
+            // Only reindex if update mode is not 'none'
             const content = await this.app.vault.cachedRead(file);
             await this.addNote(file, content);
           } else {
-            // File unchanged, load from cache
+            // File unchanged or we're not updating, load from cache
             const noteEmbedding: NoteEmbedding = {
               path: embedding.path,
               chunks: embedding.chunks.map((chunk) => ({
@@ -557,13 +560,16 @@ export class EmbeddingStore {
       if (error.code === "ENOENT") {
         logDebug(
           this.settings,
-          "No existing embeddings file found. Starting with empty index.",
+          "No existing embeddings file found. Starting with empty index."
         );
       } else {
         // For other errors, log as error and reindex
         logError("Error loading embeddings from file", error);
         // If load fails for other reasons, reindex everything
-        await this.reindexAll();
+        // Only reindex if update mode is not 'none'
+        if (this.settings.embeddingSettings.updateMode !== 'none') {
+          await this.reindexAll();
+        }
       }
     }
   }

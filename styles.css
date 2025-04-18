@@ -331,6 +331,18 @@ If your plugin does not need CSS, delete this file.
   margin-top: 10px;
 }
 
+.truncation-notice {
+  background-color: var(--background-primary);
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 12px;
+  font-size: 0.9em;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+}
+
 .ai-helper-context-note-metadata {
     display: flex;
     flex-direction: column;

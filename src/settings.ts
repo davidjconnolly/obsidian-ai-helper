@@ -42,6 +42,7 @@ export interface SummarizeSettings {
   localModel?: string;
   maxTokens: number;
   temperature: number;
+  maxContextLength: number;
 }
 
 export interface Settings {
@@ -95,7 +96,8 @@ export const DEFAULT_SETTINGS: Settings = {
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
     localModel: 'gemma-3-12b-it',
     maxTokens: 1000,
-    temperature: 0.7
+    temperature: 0.7,
+    maxContextLength: 10000
   },
 };
 
@@ -538,6 +540,17 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.summarizeSettings.temperature.toString())
         .onChange(async (value) => {
           this.plugin.settings.summarizeSettings.temperature = parseFloat(value) || DEFAULT_SETTINGS.summarizeSettings.temperature;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Max context length')
+      .setDesc('Maximum number of characters to include when summarizing text. Longer text will be truncated.')
+      .addText(text => text
+        .setPlaceholder('Enter max context length')
+        .setValue(this.plugin.settings.summarizeSettings.maxContextLength.toString())
+        .onChange(async (value) => {
+          this.plugin.settings.summarizeSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.summarizeSettings.maxContextLength;
           await this.plugin.saveSettings();
         }));
 

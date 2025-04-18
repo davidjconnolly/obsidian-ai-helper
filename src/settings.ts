@@ -28,6 +28,9 @@ export interface ChatSettings {
   similarity: number;
   maxContextLength: number;
   titleMatchBoost: number;
+  enableStreaming: boolean;
+  maxRecencyBoost: number;
+  recencyBoostWindow: number;
 }
 
 export interface SummarizeSettings {
@@ -39,6 +42,7 @@ export interface SummarizeSettings {
   localModel?: string;
   maxTokens: number;
   temperature: number;
+  maxContextLength: number;
 }
 
 export interface Settings {
@@ -53,18 +57,21 @@ export interface Settings {
 export const DEFAULT_SETTINGS: Settings = {
   chatSettings: {
     provider: 'local',
-    openaiModel: 'gpt-3.5-turbo',
+    openaiModel: 'gpt-4.1-nano',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
     openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
-    localModel: 'qwen2-7b-instruct',
-    maxTokens: 500,
+    localModel: 'gemma-3-12b-it',
+    maxTokens: 1000,
     temperature: 0.7,
     maxNotesToSearch: 20,
     displayWelcomeMessage: true,
     similarity: 0.5,
-    maxContextLength: 4000,
-    titleMatchBoost: 0.5,
+    maxContextLength: 10000,
+    titleMatchBoost: 0.3,
+    enableStreaming: true,
+    maxRecencyBoost: 0.3,
+    recencyBoostWindow: 185,
   },
   embeddingSettings: {
     provider: 'local',
@@ -80,16 +87,17 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   openChatOnStartup: false,
   debugMode: false,
-  fileUpdateFrequency: 30, // Default to 30 seconds
+  fileUpdateFrequency: 60,
   summarizeSettings: {
     provider: 'local',
-    openaiModel: 'gpt-3.5-turbo',
+    openaiModel: 'gpt-4.1-nano',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
     openaiApiKey: '',
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
-    localModel: 'qwen2-7b-instruct',
-    maxTokens: 500,
-    temperature: 0.7
+    localModel: 'gemma-3-12b-it',
+    maxTokens: 1000,
+    temperature: 0.7,
+    maxContextLength: 10000
   },
 };
 
@@ -250,6 +258,44 @@ export class AIHelperSettingTab extends PluginSettingTab {
             this.plugin.settings.chatSettings.titleMatchBoost = parsed || DEFAULT_SETTINGS.chatSettings.titleMatchBoost;
             await this.plugin.saveSettings();
           }
+        }));
+
+    new Setting(containerEl)
+      .setName('Max recency boost')
+      .setDesc('Maximum boost for recently modified files (0.0 to 1.0)')
+      .addText(text => text
+        .setPlaceholder('Enter max recency boost')
+        .setValue(this.plugin.settings.chatSettings.maxRecencyBoost.toString())
+        .onChange(async (value) => {
+          const parsed = parseFloat(value);
+          if (!isNaN(parsed) && parsed >= 0 && parsed <= 1) {
+            this.plugin.settings.chatSettings.maxRecencyBoost = parsed || DEFAULT_SETTINGS.chatSettings.maxRecencyBoost;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName('Recency boost window')
+      .setDesc('Days window for recency boost decay (higher values give older files more weight)')
+      .addText(text => text
+        .setPlaceholder('Enter recency boost window in days')
+        .setValue(this.plugin.settings.chatSettings.recencyBoostWindow.toString())
+        .onChange(async (value) => {
+          const parsed = parseInt(value);
+          if (!isNaN(parsed) && parsed > 0) {
+            this.plugin.settings.chatSettings.recencyBoostWindow = parsed || DEFAULT_SETTINGS.chatSettings.recencyBoostWindow;
+            await this.plugin.saveSettings();
+          }
+        }));
+
+    new Setting(containerEl)
+      .setName('Enable streaming')
+      .setDesc('Stream the response from the AI as it\'s being generated')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.chatSettings.enableStreaming)
+        .onChange(async (value) => {
+          this.plugin.settings.chatSettings.enableStreaming = value;
+          await this.plugin.saveSettings();
         }));
 
     new Setting(containerEl)
@@ -494,6 +540,17 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.summarizeSettings.temperature.toString())
         .onChange(async (value) => {
           this.plugin.settings.summarizeSettings.temperature = parseFloat(value) || DEFAULT_SETTINGS.summarizeSettings.temperature;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Max context length')
+      .setDesc('Maximum number of characters to include when summarizing text. Longer text will be truncated.')
+      .addText(text => text
+        .setPlaceholder('Enter max context length')
+        .setValue(this.plugin.settings.summarizeSettings.maxContextLength.toString())
+        .onChange(async (value) => {
+          this.plugin.settings.summarizeSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.summarizeSettings.maxContextLength;
           await this.plugin.saveSettings();
         }));
 

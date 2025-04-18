@@ -57,7 +57,10 @@ describe('VectorStore', () => {
                 displayWelcomeMessage: true,
                 similarity: 0.5,
                 maxContextLength: 4000,
-                titleMatchBoost: 0.5
+                titleMatchBoost: 0.5,
+                enableStreaming: true,
+                maxRecencyBoost: 0.3,
+                recencyBoostWindow: 185
             },
             openChatOnStartup: false
         } as Settings;

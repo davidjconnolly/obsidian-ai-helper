@@ -17,7 +17,14 @@ export async function summarizeSelection(editor: Editor, app: App, settings: Set
     return;
   }
 
-  const modal = new AIHelperModal(app, textToSummarize, settings, async (finalSummary: string, action: ModalAction) => {
+  // Limit the text to summarize based on maxContextLength
+  const maxContextLength = settings.summarizeSettings.maxContextLength;
+  const isTruncated = textToSummarize.length > maxContextLength;
+  const limitedText = isTruncated
+    ? textToSummarize.substring(0, maxContextLength) + `\n\n[Content truncated due to size limit of ${maxContextLength} characters]`
+    : textToSummarize;
+
+  const modal = new AIHelperModal(app, limitedText, settings, async (finalSummary: string, action: ModalAction) => {
     if (action === ModalAction.inline) {
       if (selectedText) {
         editor.replaceSelection(`${selectedText}\n\n**Summary:**\n${finalSummary}`);
@@ -63,6 +70,17 @@ class AIHelperModal extends Modal {
     this.titleEl.setText('Summarize text');
     const { contentEl } = this;
     contentEl.empty();
+
+    // Show truncation notice if text was truncated
+    if (this.text.includes('[Content truncated due to size limit')) {
+      const truncationNotice = contentEl.createEl('div', {
+        cls: 'truncation-notice',
+      });
+
+      truncationNotice.createEl('span', {
+        text: 'Selected text has been truncated to fit the maximum context length of ' + this.settings.summarizeSettings.maxContextLength + ' characters.'
+      });
+    }
 
     const markdownPreview = contentEl.createEl('textarea', {
       cls: 'summary-preview',

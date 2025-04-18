@@ -95,11 +95,13 @@ describe('Settings', () => {
         maxTokens: 1000,
         temperature: 0.7,
         maxContextLength: 2000,
-        titleMatchBoost: 1.5,
+        titleMatchBoost: 0.3,
         openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
         openaiApiKey: '',
         localApiUrl: 'http://localhost:1234/v1/chat/completions',
         localModel: 'qwen2-7b-instruct',
+        maxRecencyBoost: 0.3,
+        recencyBoostWindow: 185,
       },
       summarizeSettings: {
         provider: 'openai',
@@ -149,6 +151,11 @@ describe('Settings', () => {
       expect(DEFAULT_SETTINGS.openChatOnStartup).toBeDefined();
       expect(DEFAULT_SETTINGS.debugMode).toBeDefined();
       expect(DEFAULT_SETTINGS.fileUpdateFrequency).toBeDefined();
+    });
+
+    it('should have default recency boost settings', () => {
+      expect(DEFAULT_SETTINGS.chatSettings.maxRecencyBoost).toBe(0.3);
+      expect(DEFAULT_SETTINGS.chatSettings.recencyBoostWindow).toBe(185);
     });
   });
 

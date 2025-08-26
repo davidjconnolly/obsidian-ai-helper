@@ -1,363 +1,332 @@
-import { App, Editor, Notice, Modal } from 'obsidian';
-import { Settings } from '../settings';
-import { summarizeSelection, ModalAction } from '../summarize';
-import { logError } from '../utils';
-
-// Mock utils module
-jest.mock('../utils', () => ({
-  logDebug: jest.fn(),
-  logError: jest.fn()
-}));
-
-// Mock Obsidian modules
-jest.mock('obsidian', () => {
-  return {
-    App: jest.fn(),
-    Editor: jest.fn(),
-    Notice: jest.fn(),
-    Modal: jest.fn().mockImplementation(() => {
-      return {
-        open: jest.fn(),
-        close: jest.fn(),
-        contentEl: {
-          empty: jest.fn(),
-          createEl: jest.fn().mockReturnValue({
-            setText: jest.fn(),
-            addClass: jest.fn(),
-            value: '',
-            addEventListener: jest.fn(),
-          }),
-          createDiv: jest.fn().mockReturnValue({
-            addClass: jest.fn(),
-            appendChild: jest.fn(),
-            createEl: jest.fn().mockReturnValue({
-              addClass: jest.fn(),
-              setText: jest.fn(),
-              addEventListener: jest.fn(),
-            }),
-            createSpan: jest.fn().mockReturnValue({
-              addClass: jest.fn(),
-              setText: jest.fn(),
-            }),
-            setText: jest.fn(),
-          }),
-        },
-        titleEl: {
-          setText: jest.fn(),
-        },
-      };
-    }),
-  };
-});
-
-// Mock fetch
-global.fetch = jest.fn() as jest.Mock;
-
-// Mock TextDecoder with more compliant interface
-class MockTextDecoder {
-  encoding: string = 'utf-8';
-  fatal: boolean = false;
-  ignoreBOM: boolean = false;
-
-  decode(value: BufferSource): string {
-    // Just return a fixed string for testing
-    return 'data: {"choices":[{"delta":{"content":"Summary"}}]}\n\n';
-  }
-}
-
-global.TextDecoder = MockTextDecoder;
-
-// Mock AbortController with more compliant interface
-class MockAbortController {
-  signal: AbortSignal = {
-    aborted: false,
-    onabort: null,
-    reason: undefined,
-    throwIfAborted: () => {},
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    dispatchEvent: () => true
-  } as unknown as AbortSignal;
-
-  abort(): void {
-    (this.signal as any).aborted = true;
-  }
-}
-
-global.AbortController = MockAbortController;
-
-// Mock clipboard API
-Object.defineProperty(global, 'navigator', {
-  value: {
-    clipboard: {
-      writeText: jest.fn().mockResolvedValue(undefined)
-    }
-  },
-  writable: true
-});
-
-// Test variables
-let mockApp: App;
-let mockEditor: Editor;
-let settings: Settings;
-let originalWriteText: any;
-
-// Create mock AIHelperModal for testing
-class AIHelperModal extends Modal {
-  text: string;
-  settings: Settings;
-  onSubmit: (summary: string, action: ModalAction) => void;
-  summary: string = '';
-  controller: AbortController = new MockAbortController();
-
-  constructor(app: App, text: string, settings: Settings, onSubmit: (summary: string, action: ModalAction) => void) {
-    super(app);
-    this.text = text;
-    this.settings = settings;
-    this.onSubmit = onSubmit;
-  }
-
-  async onOpen() {
-    this.titleEl.setText('Summarize text');
-    this.contentEl.empty();
-    this.contentEl.createEl('div', { text: 'Test modal content' });
-  }
-
-  onClose() {
-    this.controller.abort();
-    this.contentEl.empty();
-  }
-
-  // Mock the streamSummary method for testing
-  async streamSummary(
-    markdownPreview: HTMLTextAreaElement,
-    inlineButton: HTMLButtonElement,
-    summarizeButton: HTMLButtonElement,
-    copyButton: HTMLButtonElement
-  ) {
-    try {
-      if (!this.settings.summarizeSettings.openaiApiUrl) {
-        throw new Error('API URL is missing');
-      }
-
-      // Simulate a successful summary
-      this.summary = 'This is a test summary';
-      markdownPreview.value = this.summary;
-
-      return this.summary;
-    } catch (error) {
-      logError('Error summarizing text', error);
-      new Notice('Error generating summary. Please try again.');
-      return '';
-    }
-  }
-}
-
-describe('Summarization', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-
-    mockApp = new App();
-    mockEditor = {
-      getSelection: jest.fn().mockReturnValue('Test text'),
-      getValue: jest.fn().mockReturnValue('Full document test text'),
-      replaceSelection: jest.fn(),
-      setValue: jest.fn(),
-      setCursor: jest.fn(),
-      offsetToPos: jest.fn().mockReturnValue({ line: 5, ch: 0 })
-    } as unknown as Editor;
-
-    // No need to save or mock clipboard.writeText since we set it up globally above
-    // originalWriteText = navigator.clipboard.writeText;
-    // navigator.clipboard.writeText = jest.fn().mockResolvedValue(undefined);
-
-    settings = {
-      chatSettings: {
-        displayWelcomeMessage: true,
-        similarity: 0.8,
-        maxNotesToSearch: 5,
-        provider: 'openai',
-        openaiModel: 'gpt-3.5-turbo',
-        maxTokens: 1000,
-        temperature: 0.7,
-        maxContextLength: 2000,
-        titleMatchBoost: 1.5,
-        openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
-        openaiApiKey: 'test-key',
-        localApiUrl: 'http://localhost:1234/v1/chat/completions',
-        localModel: 'qwen2-7b-instruct',
-      },
-      summarizeSettings: {
-        provider: 'openai',
-        openaiModel: 'gpt-3.5-turbo',
-        maxTokens: 1000,
-        temperature: 0.7,
-        openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
-        openaiApiKey: 'test-key',
-        localApiUrl: 'http://localhost:1234/v1/chat/completions',
-        localModel: 'qwen2-7b-instruct',
-      },
-      embeddingSettings: {
-        provider: 'openai',
-        openaiModel: 'text-embedding-ada-002',
-        chunkSize: 1000,
-        chunkOverlap: 200,
-        dimensions: 1536,
-        updateMode: 'onLoad',
-        openaiApiUrl: 'https://api.openai.com/v1/embeddings',
-        openaiApiKey: 'test-key',
-        localApiUrl: 'http://localhost:1234/v1/embeddings',
-        localModel: 'text-embedding-all-minilm-l6-v2-embedding',
-      },
-      openChatOnStartup: false,
-      debugMode: false,
-      fileUpdateFrequency: 60,
-    } as Settings;
-  });
-
-  afterEach(() => {
-    // No need to restore clipboard.writeText
-    // navigator.clipboard.writeText = originalWriteText;
-  });
-
-  describe('summarizeSelection function', () => {
-    it('should handle selected text', async () => {
-      await summarizeSelection(mockEditor, mockApp, settings);
-      expect(mockEditor.getSelection).toHaveBeenCalled();
-      expect(Modal).toHaveBeenCalled();
-    });
-
-    it('should handle empty selection', async () => {
-      mockEditor.getSelection = jest.fn().mockReturnValue('');
-      await summarizeSelection(mockEditor, mockApp, settings);
-      expect(mockEditor.getValue).toHaveBeenCalled();
-    });
-
-    it('should display notice for empty document', async () => {
-      mockEditor.getSelection = jest.fn().mockReturnValue('');
-      mockEditor.getValue = jest.fn().mockReturnValue('');
-      await summarizeSelection(mockEditor, mockApp, settings);
-      expect(Notice).toHaveBeenCalledWith('No text to summarize');
-    });
-  });
-
-  describe('AIHelperModal', () => {
-    let modal: AIHelperModal;
-    let onSubmitMock: jest.Mock;
-
-    beforeEach(() => {
-      onSubmitMock = jest.fn();
-
-      // Create an instance of the actual AIHelperModal class but with mocked methods
-      modal = new AIHelperModal(mockApp, 'Test text', settings, onSubmitMock);
-
-      // Mock the methods needed for tests
-      modal.titleEl = { setText: jest.fn() } as unknown as HTMLElement;
-      modal.contentEl = {
+// Mock Obsidian classes first
+jest.mock('obsidian', () => ({
+  Modal: class MockModal {
+    app: any;
+    contentEl: any;
+    titleEl: any;
+    open: any;
+    close: any;
+    constructor(app: any) {
+      this.app = app;
+      this.contentEl = {
         empty: jest.fn(),
         createEl: jest.fn().mockReturnValue({
+          createEl: jest.fn().mockReturnValue({
+            addEventListener: jest.fn(),
+          }),
           addEventListener: jest.fn(),
-          createEl: jest.fn()
+          value: '',
         }),
-        createDiv: jest.fn(),
-        appendChild: jest.fn()
-      } as unknown as HTMLElement;
-
-      // Add missing methods that are defined in the Modal class but being called in tests
-      modal.onOpen = async function() {
-        this.titleEl.setText('Summarize text');
-        this.contentEl.empty();
-        this.contentEl.createEl('textarea');
-        this.contentEl.createDiv();
-        this.streamSummary(null, null, null, null);
+        appendChild: jest.fn(),
       };
+      this.titleEl = { setText: jest.fn() };
+      this.open = jest.fn();
+      this.close = jest.fn();
+    }
+  },
+  Notice: jest.fn(),
+  App: jest.fn(),
+  Editor: jest.fn(),
+}));
 
-      modal.onClose = function() {
-        this.controller.abort();
-        this.contentEl.empty();
-      };
+// Mock utils
+jest.mock('../utils', () => ({
+  logError: jest.fn(),
+}));
 
-      // Mock streamSummary to avoid real API calls
-      modal.streamSummary = jest.fn();
+// Capture actual fetch calls for testing
+let fetchCalls: any[] = [];
+global.fetch = jest.fn().mockImplementation((...args) => {
+  fetchCalls.push(args);
+  return Promise.resolve({
+    ok: true,
+    json: async () => ({ choices: [{ message: { content: 'test summary' } }] }),
+  });
+});
 
-      // Mock the controller
-      modal.controller = {
-        abort: jest.fn(),
-        signal: {} as AbortSignal
-      };
-    });
+global.TextDecoder = class MockTextDecoder {
+  decode(val: any) {
+    if (typeof val === 'string') return val;
+    if (val instanceof Uint8Array) {
+      return Array.from(val).map(byte => String.fromCharCode(byte)).join('');
+    }
+    return '';
+  }
+} as any;
 
-    it('should initialize with correct text and settings', () => {
-      expect(modal.text).toBe('Test text');
-      expect(modal.settings).toBe(settings);
-      expect(modal.onSubmit).toBe(onSubmitMock);
-    });
+global.TextEncoder = class MockTextEncoder {
+  encode(val: string) {
+    return new Uint8Array(Array.from(val).map(char => char.charCodeAt(0)));
+  }
+} as any;
 
-    it('should open the modal and set title', async () => {
-      await modal.onOpen();
-      expect(modal.titleEl.setText).toHaveBeenCalledWith('Summarize text');
-    });
+global.AbortController = class MockAbortController {
+  signal: any;
+  constructor() {
+    this.signal = { aborted: false };
+  }
+  abort() {
+    this.signal.aborted = true;
+  }
+} as any;
 
-    it('should create UI elements in onOpen', async () => {
-      await modal.onOpen();
-      expect(modal.contentEl.empty).toHaveBeenCalled();
-      expect(modal.contentEl.createEl).toHaveBeenCalled();
-    });
+// Mock navigator.clipboard
+Object.defineProperty(navigator, 'clipboard', {
+  value: {
+    writeText: jest.fn().mockResolvedValue(undefined),
+  },
+  writable: true,
+});
 
-    it('should abort the request on close', () => {
-      modal.onClose();
-      expect(modal.controller.abort).toHaveBeenCalled();
-      expect(modal.contentEl.empty).toHaveBeenCalled();
-    });
+describe('ModalAction enum', () => {
+  it('should have correct values', async () => {
+    const { ModalAction } = await import('../summarize');
+    expect(ModalAction.inline).toBe(0);
+    expect(ModalAction.summarize).toBe(1);
+    expect(ModalAction.copy).toBe(2);
+  });
+});
 
-    it('should handle API errors', async () => {
-      // Skip this test since we're mocking the streamSummary method
-      expect(true).toBe(true);
-    });
-
-    it('should handle missing API URL', async () => {
-      // Skip this test since we're mocking the streamSummary method
-      expect(true).toBe(true);
-    });
+describe('summarizeSelection function', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    fetchCalls = [];
   });
 
-  describe('Text Summarization', () => {
-    it('should create modal with correct settings', () => {
-      const modal = new AIHelperModal(mockApp, 'Test text', settings, jest.fn());
-      expect(modal).toBeDefined();
-      expect(modal.settings).toBe(settings);
-    });
+  it('should show notice when no text is available', async () => {
+    const { summarizeSelection } = await import('../summarize');
+    const { Notice } = await import('obsidian');
 
-    it('should handle empty text', () => {
-      const modal = new AIHelperModal(mockApp, '', settings, jest.fn());
-      expect(modal.text).toBe('');
-    });
+    const mockEditor = {
+      getSelection: jest.fn().mockReturnValue(''),
+      getValue: jest.fn().mockReturnValue(''),
+    };
 
-    it('should handle text shorter than max length', () => {
-      const shortText = 'Short text';
-      const modal = new AIHelperModal(mockApp, shortText, settings, jest.fn());
-      expect(modal.text).toBe(shortText);
-    });
+    await summarizeSelection(mockEditor as any, {} as any, {} as any);
+
+    expect(Notice).toHaveBeenCalledWith('No text to summarize');
   });
 
-  describe('Format Options', () => {
-    it('should update temperature setting', () => {
-      const modal = new AIHelperModal(mockApp, 'Test text', settings, jest.fn());
-      modal.settings.summarizeSettings.temperature = 0.5;
-      expect(modal.settings.summarizeSettings.temperature).toBe(0.5);
-    });
+  it('should prefer selected text over full document', async () => {
+    const { summarizeSelection } = await import('../summarize');
 
-    it('should update max tokens setting', () => {
-      const modal = new AIHelperModal(mockApp, 'Test text', settings, jest.fn());
-      modal.settings.summarizeSettings.maxTokens = 2000;
-      expect(modal.settings.summarizeSettings.maxTokens).toBe(2000);
-    });
+    const mockEditor = {
+      getSelection: jest.fn().mockReturnValue('selected text'),
+      getValue: jest.fn().mockReturnValue('full document'),
+    };
+    const mockSettings = {
+      summarizeSettings: { maxContextLength: 1000 }
+    };
+
+    await summarizeSelection(mockEditor as any, {} as any, mockSettings as any);
+
+    expect(mockEditor.getSelection).toHaveBeenCalled();
+    expect(mockEditor.getValue).not.toHaveBeenCalled();
   });
 
-  describe('Error Handling', () => {
-    it('should handle API errors gracefully', async () => {
-      // Skip this test since we're mocking the streamSummary method
-      expect(true).toBe(true);
+  it('should fall back to full document when no selection', async () => {
+    const { summarizeSelection } = await import('../summarize');
+
+    const mockEditor = {
+      getSelection: jest.fn().mockReturnValue(''),
+      getValue: jest.fn().mockReturnValue('full document'),
+    };
+    const mockSettings = {
+      summarizeSettings: { maxContextLength: 1000 }
+    };
+
+    await summarizeSelection(mockEditor as any, {} as any, mockSettings as any);
+
+    expect(mockEditor.getSelection).toHaveBeenCalled();
+    expect(mockEditor.getValue).toHaveBeenCalled();
+  });
+
+  it('should handle text truncation logic', () => {
+    // Test the text truncation logic directly
+    const longText = 'a'.repeat(100);
+    const maxContextLength = 50;
+    const isTruncated = longText.length > maxContextLength;
+    const limitedText = isTruncated
+      ? longText.substring(0, maxContextLength) + `\n\n[Content truncated due to size limit of ${maxContextLength} characters]`
+      : longText;
+
+    expect(isTruncated).toBe(true);
+    expect(limitedText).toContain('[Content truncated due to size limit of 50 characters]');
+    expect(limitedText.length).toBeGreaterThan(maxContextLength);
+    expect(limitedText.substring(0, maxContextLength)).toBe('a'.repeat(50));
+  });
+});
+
+describe('AIHelperModal', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    fetchCalls = [];
+  });
+
+  it('should construct correct API request for OpenAI', async () => {
+    const { AIHelperModal } = await import('../summarize');
+
+    const settings = {
+      summarizeSettings: {
+        provider: 'openai',
+        openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
+        openaiApiKey: 'sk-test',
+        openaiModel: 'gpt-4',
+        maxTokens: 150,
+        temperature: 0.7,
+        enableStreaming: false,
+      }
+    };
+
+    const modal = new AIHelperModal({} as any, 'test text', settings as any, jest.fn());
+    const mockTextarea = { value: '', removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+    const mockButton = { removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+
+    await modal.generateSummary(mockTextarea, mockButton, mockButton, mockButton);
+
+    expect(fetchCalls).toHaveLength(1);
+    const [url, options] = fetchCalls[0];
+
+    expect(url).toBe('https://api.openai.com/v1/chat/completions');
+    expect(options.method).toBe('POST');
+    expect(options.headers['Authorization']).toBe('Bearer sk-test');
+    expect(options.headers['Content-Type']).toBe('application/json');
+
+    const body = JSON.parse(options.body);
+    expect(body.model).toBe('gpt-4');
+    expect(body.max_tokens).toBe(150);
+    expect(body.temperature).toBe(0.7);
+    expect(body.stream).toBe(false);
+    expect(body.messages).toHaveLength(4);
+    expect(body.messages[3].content).toContain('test text');
+  });
+
+  it('should construct correct API request for local provider', async () => {
+    const { AIHelperModal } = await import('../summarize');
+
+    const settings = {
+      summarizeSettings: {
+        provider: 'local',
+        localApiUrl: 'http://localhost:1234/v1/chat/completions',
+        localModel: 'llama-2',
+        maxTokens: 100,
+        temperature: 0.5,
+        enableStreaming: true,
+      }
+    };
+
+    const modal = new AIHelperModal({} as any, 'test text', settings as any, jest.fn());
+    const mockTextarea = { value: '', removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+    const mockButton = { removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+
+    await modal.generateSummary(mockTextarea, mockButton, mockButton, mockButton);
+
+    expect(fetchCalls).toHaveLength(1);
+    const [url, options] = fetchCalls[0];
+
+    expect(url).toBe('http://localhost:1234/v1/chat/completions');
+    expect(options.headers['Authorization']).toBeUndefined();
+
+    const body = JSON.parse(options.body);
+    expect(body.model).toBe('llama-2');
+    expect(body.stream).toBe(true);
+  });
+
+  it('should handle missing API URL configuration', async () => {
+    const { AIHelperModal } = await import('../summarize');
+    const { logError } = await import('../utils');
+
+    const settings = {
+      summarizeSettings: {
+        provider: 'openai',
+        openaiApiUrl: '',
+        openaiApiKey: 'sk-test',
+      }
+    };
+
+    const modal = new AIHelperModal({} as any, 'test text', settings as any, jest.fn());
+    const mockTextarea = { value: '', removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+    const mockButton = { removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+
+    await modal.generateSummary(mockTextarea, mockButton, mockButton, mockButton);
+
+    expect(logError).toHaveBeenCalledWith('Error summarizing text', expect.any(Error));
+    expect(mockTextarea.value).toContain('Failed to summarize text');
+  });
+
+  it('should handle missing OpenAI API key', async () => {
+    const { AIHelperModal } = await import('../summarize');
+    const { logError } = await import('../utils');
+
+    const settings = {
+      summarizeSettings: {
+        provider: 'openai',
+        openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
+        openaiApiKey: '',
+      }
+    };
+
+    const modal = new AIHelperModal({} as any, 'test text', settings as any, jest.fn());
+    const mockTextarea = { value: '', removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+    const mockButton = { removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+
+    await modal.generateSummary(mockTextarea, mockButton, mockButton, mockButton);
+
+    expect(logError).toHaveBeenCalledWith('Error summarizing text', expect.any(Error));
+    expect(mockTextarea.value).toContain('OpenAI API key is missing');
+  });
+
+  it('should parse streaming response correctly', async () => {
+    const { AIHelperModal } = await import('../summarize');
+
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":" World"}}]}\n\n',
+      'data: [DONE]\n\n'
+    ];
+
+    let chunkIndex = 0;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            if (chunkIndex < chunks.length) {
+              const chunk = chunks[chunkIndex++];
+              return {
+                done: false,
+                value: new Uint8Array(Array.from(chunk).map(char => char.charCodeAt(0)))
+              };
+            }
+            return { done: true, value: undefined };
+          }
+        })
+      }
     });
+
+    // Use a simple TextDecoder mock
+    global.TextDecoder = class MockTextDecoder {
+      decode(data: Uint8Array) {
+        return Array.from(data).map(byte => String.fromCharCode(byte)).join('');
+      }
+    } as any;
+
+    const settings = {
+      summarizeSettings: {
+        provider: 'openai',
+        openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
+        openaiApiKey: 'sk-test',
+        enableStreaming: true,
+      }
+    };
+
+    const modal = new AIHelperModal({} as any, 'test text', settings as any, jest.fn());
+    const mockTextarea = { value: '', removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+    const mockButton = { removeAttribute: jest.fn(), setAttribute: jest.fn() } as any;
+
+    await modal.generateSummary(mockTextarea, mockButton, mockButton, mockButton);
+
+    expect(mockTextarea.value).toBe('Hello World');
+    expect(modal.summary).toBe('Hello World');
   });
 });

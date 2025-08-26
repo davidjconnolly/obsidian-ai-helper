@@ -43,6 +43,7 @@ export interface SummarizeSettings {
   maxTokens: number;
   temperature: number;
   maxContextLength: number;
+  enableStreaming: boolean;
 }
 
 export interface Settings {
@@ -97,7 +98,8 @@ export const DEFAULT_SETTINGS: Settings = {
     localModel: 'gemma-3-12b-it',
     maxTokens: 1000,
     temperature: 0.7,
-    maxContextLength: 10000
+    maxContextLength: 10000,
+    enableStreaming: true
   },
 };
 
@@ -551,6 +553,16 @@ export class AIHelperSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.summarizeSettings.maxContextLength.toString())
         .onChange(async (value) => {
           this.plugin.settings.summarizeSettings.maxContextLength = parseInt(value) || DEFAULT_SETTINGS.summarizeSettings.maxContextLength;
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('Enable streaming')
+      .setDesc('Stream the response from the AI as it\'s being generated')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.summarizeSettings.enableStreaming)
+        .onChange(async (value) => {
+          this.plugin.settings.summarizeSettings.enableStreaming = value;
           await this.plugin.saveSettings();
         }));
 

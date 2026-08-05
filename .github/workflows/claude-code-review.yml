@@ -1,66 +1,38 @@
 name: Claude Code Review
 
-# Automated Claude review on every pull request opened from a branch in this
-# repo. Fork/external PRs are skipped (the `if` guard below) — they can't read
-# the CLAUDE_CODE_OAUTH_TOKEN secret anyway, and Claude shouldn't auto-run on
-# unreviewed external code.
+# Thin caller — the review logic lives in davidjconnolly/shared-workflows so
+# every repo stays in lockstep. Edit it there, not here.
 #
-# When the review finds no blocking issues, Claude submits a formal APPROVE
-# review (as claude[bot]), which satisfies a protect-main ruleset's
-# required_approving_review_count: 1. claude[bot] is a distinct identity from
-# the PR author, so the approval counts (GitHub ignores self-approvals).
+# The `permissions:` block is NOT optional. A reusable workflow cannot hold more
+# permission than its caller grants, and this repo's default_workflow_permissions
+# is "read" — drop the block and the reviewer is silently capped to read-only:
+# the job goes green and no review is ever posted.
 #
-# Requires a repository secret CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`).
+# Requires repo secret CLAUDE_CODE_OAUTH_TOKEN (fanned out by hermes-config's
+# sync-claude-token.yml).
 
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
 
+# One review at a time per PR. The shared workflow's patch-id cache is
+# lookup-then-write with no locking, so two rebases seconds apart would both
+# miss and both review; this collapses them and drops superseded reviews.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+  id-token: write
+
 jobs:
-  claude-review:
-    # Skip PRs whose head branch lives in a fork (external contributors)
-    if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: read
-      id-token: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Run Claude Code Review
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
-          # PRs here are often opened by Dave's GitHub App agents; without this
-          # the action errors with "Workflow initiated by non-human actor".
-          allowed_bots: "dependabot,hermes-dave,claude-code-dave"
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
-
-            Review this pull request as an experienced reviewer. Focus on:
-            - Correctness bugs and edge cases
-            - Security issues (auth, input handling, injection, leaked secrets)
-            - Consistency with the conventions of the surrounding code
-              (follow CLAUDE.md if present)
-            - Opportunities to simplify or reuse existing code
-
-            Post concise, actionable inline comments on the changed lines. Skip
-            nitpicks and praise — only flag things worth changing. If the PR
-            looks good, say so briefly.
-
-            Then submit a formal review verdict:
-            - If there are NO blocking issues (nothing that must be fixed before
-              merge — style nits and optional suggestions don't block), approve:
-              gh pr review ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --approve --body "<one-line summary of why it's mergeable>"
-            - If there ARE blocking issues, do NOT approve. Your comments stand
-              as the verdict and any required-review check stays unsatisfied
-              until a clean revision is pushed.
-          claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr review:*)"
+  review:
+    uses: davidjconnolly/shared-workflows/.github/workflows/claude-code-review.yml@main
+    # Pass the one secret it needs, not `secrets: inherit` — inherit exposes
+    # every secret this repo holds to the called workflow, and the reviewer only
+    # ever needs the OAuth token.
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

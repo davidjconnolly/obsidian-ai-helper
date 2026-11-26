@@ -252,7 +252,8 @@ describe('AIHelperChatView', () => {
         localApiUrl: 'http://localhost:1234/v1/chat/completions',
         localModel: 'qwen2-7b-instruct',
         maxTokens: 500,
-        temperature: 0.7
+        temperature: 0.7,
+        maxContextLength: 10000
       },
       openChatOnStartup: false,
       debugMode: true,

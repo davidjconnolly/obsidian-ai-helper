@@ -112,3 +112,17 @@ The AI Chatbot allows you to have natural conversations with your notes, includi
 5. Use the context notes display to understand which notes are being used
 6. Adjust similarity threshold if you're getting too many or too few results
 7. Consider enabling recency boost if you frequently query recent notes
+
+## Development
+
+The project uses npm (`package-lock.json` is the lockfile).
+
+```bash
+npm ci                 # install exact locked dependencies
+npm run dev            # build main.js with inline source maps and rebuild on change
+npm run build          # type-check, then write a minified production main.js
+npm test               # run the Jest suite (npm run test:coverage for coverage)
+```
+
+To try a build in Obsidian, copy `main.js`, `manifest.json` and `styles.css` into
+`.obsidian/plugins/ai-helper/` in a vault and reload the plugin.

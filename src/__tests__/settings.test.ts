@@ -5,7 +5,7 @@ import AIHelperPlugin from '../main';
 // Mock the Setting class
 jest.mock('obsidian', () => {
   const mockAddText = jest.fn().mockImplementation((cb) => {
-    const mockText = {
+    const mockText: any = {
       setValue: jest.fn().mockReturnThis(),
       setPlaceholder: jest.fn().mockReturnThis(),
       onChange: jest.fn().mockImplementation((callback) => {
@@ -18,7 +18,7 @@ jest.mock('obsidian', () => {
   });
 
   const mockAddDropdown = jest.fn().mockImplementation((cb) => {
-    const mockDropdown = {
+    const mockDropdown: any = {
       addOption: jest.fn().mockReturnThis(),
       setValue: jest.fn().mockReturnThis(),
       onChange: jest.fn().mockImplementation((callback) => {
@@ -38,7 +38,7 @@ jest.mock('obsidian', () => {
       addText: mockAddText,
       addDropdown: mockAddDropdown,
       addToggle: jest.fn().mockImplementation((cb) => {
-        const mockToggle = {
+        const mockToggle: any = {
           setValue: jest.fn().mockReturnThis(),
           onChange: jest.fn().mockImplementation((callback) => {
             callback(true);
@@ -49,7 +49,7 @@ jest.mock('obsidian', () => {
         return mockSettingInstance;
       }),
       addSlider: jest.fn().mockImplementation((cb) => {
-        const mockSlider = {
+        const mockSlider: any = {
           setLimits: jest.fn().mockReturnThis(),
           setValue: jest.fn().mockReturnThis(),
           setDynamicTooltip: jest.fn().mockReturnThis(),

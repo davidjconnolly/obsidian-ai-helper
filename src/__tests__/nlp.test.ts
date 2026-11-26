@@ -18,6 +18,9 @@ const TEST_SETTINGS: Settings = {
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
     openaiApiUrl: 'https://api.openai.com/v1/chat/completions',
     openaiApiKey: '',
+    enableStreaming: true,
+    maxRecencyBoost: 0.3,
+    recencyBoostWindow: 185,
   },
   embeddingSettings: {
     provider: 'local',
@@ -39,7 +42,8 @@ const TEST_SETTINGS: Settings = {
     localApiUrl: 'http://localhost:1234/v1/chat/completions',
     localModel: 'qwen2-7b-instruct',
     maxTokens: 500,
-    temperature: 0.7
+    temperature: 0.7,
+    maxContextLength: 10000
   },
   openChatOnStartup: false,
   fileUpdateFrequency: 30
